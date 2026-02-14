@@ -42,6 +42,31 @@ async fn main() -> anyhow::Result<()> {
 
     info!(mode = ?app_config.mode, "mtb starting");
 
+    // Geoblock check — verify we can trade from this IP
+    {
+        use polymarket_client_sdk::clob::Client as ClobClient;
+        let clob = ClobClient::default();
+        match clob.check_geoblock().await {
+            Ok(response) => {
+                if response.blocked {
+                    anyhow::bail!(
+                        "geo-blocked: trading not available from {} ({})",
+                        response.country,
+                        response.ip
+                    );
+                }
+                info!(
+                    ip = %response.ip,
+                    country = %response.country,
+                    "geoblock check passed"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "geoblock check failed — proceeding with caution");
+            }
+        }
+    }
+
     // Initialize trade logger
     let logger = TradeLogger::new(&app_config.logging.trade_log_path)?;
 

@@ -81,11 +81,22 @@ price feeds that **lead** Chainlink:
 | Fee model | 2% dynamic taker fee | Symmetric around 0.5, validated with unit tests |
 | Primary price signal | Binance (via RTDS) | Highest volume, leads Chainlink aggregation |
 
+## Deployment
+- **VPS**: Amsterdam (Hetzner to start, ~€10/month). Best latency tradeoff: ~5-10ms to
+  Polymarket CLOB (London), ~10-20ms to Polygon RPC (Frankfurt), ~100-150ms to Binance (Tokyo).
+- **Private RPC**: Required for Phase 2 (Alchemy/QuickNode EU, ~$50/month). Non-negotiable
+  for both speed and reliability of order submission.
+- **Latency budget**: Edges are milliseconds, not seconds. Exchange price moves propagate to
+  Chainlink → Polymarket in ~100-200ms. Our total tick-to-trade must be competitive:
+  Binance WS (~100ms) + processing (<1ms) + CLOB submit (~10ms) ≈ 110ms.
+- **Geo-compliance**: Netherlands is not geo-blocked. Add geoblock check at bot startup.
+
 ## Risk Register
 | Risk | Mitigation |
 |------|------------|
 | Fee modeling errors | Precise fee calc with unit tests against known values |
 | Arb edges too competitive | Validate with dry-run before risking capital |
 | API rate limits | Respect CLOB rate limits, implement backoff |
-| Chainlink latency | Monitor Binance as leading indicator |
-| MEV on Polygon | Research needed |
+| Chainlink latency | Monitor Binance as leading indicator; get sponsored Chainlink key |
+| MEV on Polygon | Use private relay / Flashbots-equivalent for order submission (research needed) |
+| Edge window is ms not s | Optimize every hop; private RPC; benchmark real pings before going live |
