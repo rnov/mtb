@@ -1,0 +1,71 @@
+use rust_decimal::Decimal;
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct AppConfig {
+    pub mode: RunMode,
+    pub clob_url: String,
+    pub gamma_url: String,
+    pub chain_id: u64,
+    pub strategy: StrategyConfig,
+    pub risk: RiskConfig,
+    pub discovery: DiscoveryConfig,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    DryRun,
+    Live,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct StrategyConfig {
+    /// Minimum profit (after fees) to trigger an arb, e.g. 0.005 = 0.5%
+    pub min_arb_profit: Decimal,
+    /// Assets to track: "BTC", "ETH", "SOL"
+    pub assets: Vec<String>,
+    /// Maximum order size in USDC
+    pub max_order_size_usdc: Decimal,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct RiskConfig {
+    /// Maximum total exposure in USDC across all positions
+    pub max_exposure_usdc: Decimal,
+    /// Maximum loss in USDC before kill switch triggers
+    pub max_daily_loss_usdc: Decimal,
+    /// Drawdown percentage (0.0-1.0) before kill switch triggers
+    pub max_drawdown_pct: Decimal,
+    /// Maximum consecutive failed orders before kill switch
+    pub max_consecutive_failures: u32,
+    /// Seconds of feed disconnect before halting
+    pub feed_disconnect_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoveryConfig {
+    /// How often to poll Gamma for new markets (seconds)
+    pub poll_interval_secs: u64,
+    /// Assets to discover: "BTC", "ETH", "SOL", "XRP"
+    pub assets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoggingConfig {
+    /// Path for JSON lines trade log
+    pub trade_log_path: String,
+    /// tracing filter directive, e.g. "mtb=debug,info"
+    pub filter: String,
+}
+
+/// Secrets loaded from environment variables (never serialized)
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct Secrets {
+    pub private_key: String,
+}

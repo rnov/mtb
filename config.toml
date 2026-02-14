@@ -1,0 +1,24 @@
+mode = "dry_run"
+clob_url = "https://clob.polymarket.com"
+gamma_url = "https://gamma-api.polymarket.com"
+chain_id = 137
+
+[strategy]
+min_arb_profit = "0.005"
+assets = ["BTC", "ETH", "SOL", "XRP"]
+max_order_size_usdc = "50"
+
+[risk]
+max_exposure_usdc = "500"
+max_daily_loss_usdc = "100"
+max_drawdown_pct = "0.10"
+max_consecutive_failures = 5
+feed_disconnect_timeout_secs = 5
+
+[discovery]
+poll_interval_secs = 60
+assets = ["BTC", "ETH", "SOL", "XRP"]
+
+[logging]
+trade_log_path = "logs/trades.jsonl"
+filter = "mtb=debug,info"

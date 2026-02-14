@@ -1,0 +1,6 @@
+/target
+.deps/
+.env
+.claude
+.idea/
+logs/
