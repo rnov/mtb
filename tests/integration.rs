@@ -464,3 +464,138 @@ async fn live_post_unfillable_fok_order() {
 
     println!("post: full order submission pipeline verified");
 }
+
+// =============================================================================
+// Binance direct WebSocket tests
+// =============================================================================
+
+/// Verify direct Binance WebSocket bookTicker stream delivers price data.
+/// Connects, receives at least one update for btcusdt within 5 seconds.
+#[tokio::test]
+#[ignore]
+async fn binance_ws_receives_prices() {
+    use tokio::sync::broadcast;
+
+    use mtb::feed::crypto_price::{asset_to_binance_symbol, CryptoPriceFeed};
+    use mtb::feed::FeedEvent;
+
+    let (tx, mut rx) = broadcast::channel::<FeedEvent>(256);
+
+    let symbols = vec![asset_to_binance_symbol("BTC")];
+    let feed = CryptoPriceFeed::new(tx);
+    feed.subscribe(symbols).unwrap();
+
+    let mut received = 0u32;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let connect_start = std::time::Instant::now();
+    let mut last_recv = connect_start;
+    let mut gaps_ms = Vec::new();
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                let now = std::time::Instant::now();
+                let gap_ms = now.duration_since(last_recv).as_millis();
+                last_recv = now;
+                match result {
+                    Ok(FeedEvent::CryptoPrice { symbol, price, .. }) => {
+                        received += 1;
+                        if received == 1 {
+                            println!("binance: first msg in {}ms (connect + TLS)", gap_ms);
+                        } else {
+                            gaps_ms.push(gap_ms);
+                        }
+                        println!("  [{received:>2}] {symbol} = ${price} (gap: {gap_ms}ms)");
+                        assert_eq!(symbol, "btcusdt");
+                        assert!(price > rust_decimal_macros::dec!(0));
+                        if received >= 15 {
+                            break;
+                        }
+                    }
+                    Ok(_) => {} // disconnect/reconnect events
+                    Err(e) => panic!("channel error: {e}"),
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                panic!("timed out waiting for binance prices (got {received})");
+            }
+        }
+    }
+
+    if !gaps_ms.is_empty() {
+        let min = gaps_ms.iter().min().unwrap();
+        let max = gaps_ms.iter().max().unwrap();
+        let avg = gaps_ms.iter().sum::<u128>() / gaps_ms.len() as u128;
+        println!("\nbinance: {received} updates | gap min={min}ms avg={avg}ms max={max}ms");
+    }
+}
+
+/// Measure real network latency to Binance using the @trade stream.
+/// Compares Binance's server-side event time (E) against our local clock.
+/// Run locally and on VPS to compare: cargo test binance_network_latency -- --ignored --nocapture
+/// NOTE: requires NTP-synced clock for accurate results.
+#[tokio::test]
+#[ignore]
+async fn binance_network_latency() {
+    use futures::StreamExt;
+
+    let url = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+    let (ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let (_, mut read) = ws.split();
+
+    let mut latencies_ms = Vec::new();
+    let samples = 50;
+
+    println!("binance latency test: collecting {samples} trade messages...\n");
+
+    while latencies_ms.len() < samples {
+        if let Some(Ok(msg)) = read.next().await {
+            let local_now = chrono::Utc::now().timestamp_millis();
+            let text = match msg.into_text() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            // Trade stream format: {"e":"trade","E":1234567890123,"s":"BTCUSDT","p":"69000.00",...}
+            let parsed: serde_json::Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let event_time = match parsed.get("E").and_then(|v| v.as_i64()) {
+                Some(t) => t,
+                None => continue,
+            };
+            let price = parsed.get("p").and_then(|v| v.as_str()).unwrap_or("?");
+
+            let latency = local_now - event_time;
+            latencies_ms.push(latency);
+
+            if latencies_ms.len() <= 5 || latencies_ms.len() == samples {
+                println!(
+                    "  [{:>2}] price=${price} binance_time={event_time} local_now={local_now} latency={latency}ms",
+                    latencies_ms.len()
+                );
+            } else if latencies_ms.len() == 6 {
+                println!("  ...");
+            }
+        }
+    }
+
+    latencies_ms.sort();
+    let min = latencies_ms.first().unwrap();
+    let max = latencies_ms.last().unwrap();
+    let avg = latencies_ms.iter().sum::<i64>() / latencies_ms.len() as i64;
+    let p50 = latencies_ms[latencies_ms.len() / 2];
+    let p95 = latencies_ms[(latencies_ms.len() as f64 * 0.95) as usize];
+    let p99 = latencies_ms[(latencies_ms.len() as f64 * 0.99) as usize];
+
+    println!("\n--- Binance Network Latency ({samples} samples) ---");
+    println!("  min:  {min}ms");
+    println!("  avg:  {avg}ms");
+    println!("  p50:  {p50}ms");
+    println!("  p95:  {p95}ms");
+    println!("  p99:  {p99}ms");
+    println!("  max:  {max}ms");
+    println!("\nNOTE: accuracy depends on NTP clock sync. Negative values = clock ahead of Binance.");
+}

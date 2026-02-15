@@ -47,6 +47,12 @@
 - Authenticated tests verified: EIP-712 auth, $9 USDC balance visible, USDC allowances set, order submission pipeline working
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
+### Phase 3 Test Coverage (cumulative)
+- 27 unit tests passing (+3: Binance URL builder, asset-to-symbol mapping, bookTicker JSON parsing)
+- 10 live integration tests (+2: `binance_ws_receives_prices`, `binance_network_latency`)
+- Binance latency measured: ~30ms from local machine. Run `binance_network_latency` on VPS to compare.
+- `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
+
 ## Architecture Notes
 - **Wallet**: MetaMask EOA private key + `SignatureType::GnosisSafe` (type 2). SDK auto-derives proxy wallet address via CREATE2. Funds deposited through Polymarket UI go to proxy wallet. CLOB authenticates with EOA key, trades from proxy.
 - `.deps/rs-clob-client/` is a local clone for reading source only; not used by build
@@ -58,7 +64,7 @@
 
 ## Phase 3: External Feeds + Directional Strategy — IN PROGRESS
 - [x] **Step 0: Latency Instrumentation** — Timing spans across the hot path: tick-to-trade in `main.rs` (arb_us, risk_us, exec_ms, total_ms), execution breakdown in `live.rs` (auth_ms, build_ms, sign_ms, post_ms). All logged as structured tracing fields.
-- [ ] Step 1: Binance price feed (RTDS WebSocket)
+- [x] **Step 1: Binance Direct Price Feed** — Direct WebSocket to `wss://stream.binance.com:9443` (NOT via Polymarket RTDS relay). Combined `bookTicker` stream for BTC/ETH/SOL/XRP. Auto-reconnect on disconnect. Processing latency logged every 1000 ticks. Network latency test via `@trade` stream (30ms from local, run on VPS to compare). 3 unit tests + 2 integration tests.
 - [ ] Step 2: Price state manager
 - [ ] Step 3: Directional signal
 - [ ] Step 4: Directional strategy

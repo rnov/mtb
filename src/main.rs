@@ -5,7 +5,7 @@ use std::time::Duration;
 use chrono::Utc;
 use rust_decimal::Decimal;
 use tokio::sync::broadcast;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod config;
 mod error;
@@ -18,7 +18,7 @@ mod strategy;
 
 use config::RunMode;
 use execution::{DryRunExecutor, Executor, LiveExecutor};
-use feed::{FeedEvent, OrderbookFeed};
+use feed::{CryptoPriceFeed, FeedEvent, OrderbookFeed};
 use market::MarketDiscovery;
 use monitor::TradeLogger;
 use risk::RiskManager;
@@ -139,10 +139,20 @@ async fn main() -> anyhow::Result<()> {
     let (tx, mut rx) = broadcast::channel::<FeedEvent>(1024);
 
     // Start orderbook feed
-    let orderbook_feed = OrderbookFeed::new(tx);
+    let orderbook_feed = OrderbookFeed::new(tx.clone());
     if !all_token_ids.is_empty() {
         orderbook_feed.subscribe(all_token_ids)?;
     }
+
+    // Start Binance direct price feed
+    let binance_symbols: Vec<String> = app_config
+        .strategy
+        .assets
+        .iter()
+        .map(|a| feed::crypto_price::asset_to_binance_symbol(a))
+        .collect();
+    let price_feed = CryptoPriceFeed::new(tx);
+    price_feed.subscribe(binance_symbols)?;
 
     // Build lookup: token_id -> market index + whether it's up/down
     let mut token_to_market: HashMap<String, (usize, bool)> = HashMap::new();
@@ -302,7 +312,14 @@ async fn main() -> anyhow::Result<()> {
                             n.notify_reconnect(&source).await;
                         }
                     }
-                    Ok(_) => {} // CryptoPrice events (Phase 3)
+                    Ok(FeedEvent::CryptoPrice { symbol, price, timestamp }) => {
+                        debug!(
+                            symbol = %symbol,
+                            price = %price,
+                            timestamp = timestamp,
+                            "binance price"
+                        );
+                    }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(missed = n, "feed receiver lagged");
                     }
