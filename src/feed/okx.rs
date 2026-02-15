@@ -107,10 +107,7 @@ struct TickerData {
     ts: String,
 }
 
-async fn run_okx_stream(
-    tx: broadcast::Sender<FeedEvent>,
-    inst_ids: &[String],
-) -> Result<()> {
+async fn run_okx_stream(tx: broadcast::Sender<FeedEvent>, inst_ids: &[String]) -> Result<()> {
     info!(url = OKX_WS_URL, "connecting to okx WebSocket");
 
     let (ws_stream, _response) = tokio_tungstenite::connect_async(OKX_WS_URL)
@@ -135,7 +132,9 @@ async fn run_okx_stream(
     let sub_json = serde_json::to_string(&sub_msg)
         .map_err(|e| Error::Feed(format!("failed to serialize subscribe msg: {e}")))?;
     write
-        .send(tokio_tungstenite::tungstenite::Message::Text(sub_json.into()))
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            sub_json.into(),
+        ))
         .await
         .map_err(|e| Error::Feed(format!("okx WS send failed: {e}")))?;
 
@@ -174,10 +173,7 @@ async fn run_okx_stream(
         };
 
         // Only process ticker channel data
-        let is_ticker = parsed
-            .arg
-            .as_ref()
-            .is_some_and(|a| a.channel == "tickers");
+        let is_ticker = parsed.arg.as_ref().is_some_and(|a| a.channel == "tickers");
         if !is_ticker {
             continue;
         }
@@ -198,9 +194,10 @@ async fn run_okx_stream(
 
             let mid = (bid + ask) / Decimal::TWO;
             // OKX provides timestamp in ms
-            let timestamp = data.ts.parse::<i64>().unwrap_or_else(|_| {
-                chrono::Utc::now().timestamp_millis()
-            });
+            let timestamp = data
+                .ts
+                .parse::<i64>()
+                .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
             let symbol = data.inst_id.clone();
 
             let process_us = recv_at.elapsed().as_micros();

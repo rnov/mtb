@@ -1,3 +1,4 @@
+pub mod chainlink;
 pub mod coinbase;
 pub mod crypto_price;
 pub mod okx;
@@ -5,6 +6,7 @@ pub mod orderbook;
 pub mod price_state;
 pub mod types;
 
+pub use chainlink::ChainlinkFeed;
 pub use coinbase::CoinbaseFeed;
 pub use crypto_price::CryptoPriceFeed;
 pub use okx::OkxFeed;

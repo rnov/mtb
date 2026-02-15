@@ -90,10 +90,7 @@ struct BookTickerData {
     a: String,
 }
 
-async fn run_binance_stream(
-    tx: broadcast::Sender<FeedEvent>,
-    symbols: &[String],
-) -> Result<()> {
+async fn run_binance_stream(tx: broadcast::Sender<FeedEvent>, symbols: &[String]) -> Result<()> {
     let url = build_stream_url(symbols);
 
     info!(url = %url, "connecting to binance WebSocket");

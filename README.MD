@@ -2,7 +2,7 @@
 
 Polymarket trading bot targeting 15-minute crypto up/down markets (BTC, ETH, SOL, XRP).
 
-Detects arbitrage when `up_ask + down_ask < 1.0` after fees, and (in progress) trades directionally using external price signals from Binance. Built in Rust on top of the official [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) SDK.
+Detects arbitrage when `up_ask + down_ask < 1.0` after fees, cross-validated against real-time prices from Binance, Coinbase, and OKX to reject phantom arbs. Built in Rust on top of the official [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) SDK.
 
 ## Status
 
@@ -10,7 +10,7 @@ Detects arbitrage when `up_ask + down_ask < 1.0` after fees, and (in progress) t
 |-------|--------|
 | Phase 1: Dry-run arb detection | Complete |
 | Phase 2: Live execution + safety | Complete |
-| Phase 3: External feeds + directional | In progress |
+| Phase 3: External feeds + arb validation | In progress |
 
 See [PROGRESS.md](PROGRESS.md) for detailed step-by-step status.
 
@@ -84,36 +84,48 @@ Automatic alerts: trade filled/failed, execution errors, feed disconnect/reconne
 ```
 Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
                                |
-               +---------------+---------------+
-               v                               v
-      CLOB WebSocket                   Binance WebSocket
-      (orderbook data)                 (direct bookTicker)
-               |                               |
-               +-----------+-------------------+
-                           v
-                   broadcast channel
-                           v
-                   Main Event Loop (tokio::select!)
-                           v
-                   Strategy Engine (pure, no IO)
-                   - build MarketSnapshot
-                   - detect arb / directional signal
-                   - calculate fees precisely
-                           v
-                   Risk Manager (sync, RwLock)
-                   - position limit check
-                   - exposure cap check
-                   - kill switch check
-                   - feed staleness check
-                   - adaptive backoff check
-                           v
-                   Executor (trait-based)
-                   - Live: SDK order placement (FOK)
-                   - DryRun: log to JSON lines
-                           v
-                   Monitor
-                   - Telegram alert
-                   - JSON log line
+           +-------------------+-------------------+
+           v                   v                   v
+  CLOB WebSocket       Exchange WebSockets    Chainlink (planned)
+  (orderbook data)     (direct price feeds)   (resolution price)
+           |                   |                   |
+           |           +-------+-------+           |
+           |           v       v       v           |
+           |       Binance  Coinbase  OKX          |
+           |       bookTicker ticker  tickers      |
+           |           |       |       |           |
+           |           +---+---+---+---+           |
+           |               v                       |
+           |         PriceState                    |
+           |         (multi-exchange               |
+           |          cross-validation)            |
+           |               |                       |
+           +-------+-------+-----------+-----------+
+                   v
+           broadcast channel
+                   v
+           Main Event Loop (tokio::select!)
+                   v
+           Strategy Engine (pure, no IO)
+           - build MarketSnapshot
+           - detect arb (up_ask + down_ask < 1.0)
+           - cross-validate with PriceState
+           - calculate fees precisely
+                   v
+           Risk Manager (sync, RwLock)
+           - position limit check
+           - exposure cap check
+           - kill switch check
+           - feed staleness check
+           - adaptive backoff check
+                   v
+           Executor (trait-based)
+           - Live: SDK order placement (FOK)
+           - DryRun: log to JSON lines
+                   v
+           Monitor
+           - Telegram alert
+           - JSON log line
 ```
 
 ## Module Layout
@@ -136,8 +148,12 @@ src/
   feed/
     mod.rs                Feed manager (multiplexes WS sources)
     orderbook.rs          CLOB WebSocket: BestBidAsk per token
-    crypto_price.rs       Direct Binance WebSocket: bookTicker stream
-    types.rs              FeedEvent enum (OrderbookUpdate, CryptoPrice, Disconnected, Reconnected)
+    crypto_price.rs       Binance direct WS: combined bookTicker stream
+    coinbase.rs           Coinbase direct WS: Advanced Trade ticker
+    okx.rs                OKX direct WS: public tickers channel
+    chainlink.rs          Chainlink Data Streams via RTDS (resolution source)
+    price_state.rs        Multi-exchange price state + cross-validation
+    types.rs              FeedEvent enum (OrderbookUpdate, CryptoPrice, ChainlinkPrice, Disconnected, Reconnected)
 
   strategy/
     mod.rs                Re-exports
@@ -163,7 +179,7 @@ src/
 
 ## Testing
 
-### Unit Tests (27)
+### Unit Tests (40)
 
 Fast, no network. Run anytime:
 
@@ -171,9 +187,9 @@ Fast, no network. Run anytime:
 cargo test
 ```
 
-Covers: fee model (11 tests), arb detection (5), risk manager (7), Binance feed parsing (3), position limits (3).
+Covers: fee model (11), arb detection (5), risk manager (7), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (7), position limits (3).
 
-### Integration Tests (10)
+### Integration Tests (15)
 
 Hit real APIs. Marked `#[ignore]`, require network access:
 
@@ -185,35 +201,58 @@ cargo test -- --ignored --nocapture
 Or run specific tests:
 
 ```bash
-# Unauthenticated (no .env needed)
+# Exchange price feeds (no .env needed)
+cargo test binance_ws_receives_prices -- --ignored --nocapture
+cargo test coinbase_ws_receives_prices -- --ignored --nocapture
+cargo test okx_ws_receives_prices -- --ignored --nocapture
+
+# Network latency diagnostics (run locally and on VPS to compare)
+cargo test binance_network_latency -- --ignored --nocapture
+cargo test coinbase_network_latency -- --ignored --nocapture
+cargo test okx_network_latency -- --ignored --nocapture
+
+# Chainlink resolution feed (via RTDS)
+cargo test chainlink_rtds_receives_prices -- --ignored --nocapture
+
+# Polymarket pipeline (no .env needed)
 cargo test pipeline_discover_fetch_detect -- --ignored --nocapture
 cargo test rest_orderbook_returns_valid_data -- --ignored --nocapture
 cargo test geoblock_check -- --ignored --nocapture
 cargo test batch_orderbook_fetch -- --ignored --nocapture
-cargo test binance_ws_receives_prices -- --ignored --nocapture
 
 # Authenticated (requires POLYMARKET_PRIVATE_KEY in .env)
 cargo test auth_clob_authenticate -- --ignored --nocapture
 cargo test auth_check_balance_allowance -- --ignored --nocapture
 cargo test auth_build_and_sign_order -- --ignored --nocapture
 cargo test live_post_unfillable_fok_order -- --ignored --nocapture
-
-# Latency diagnostic (run locally and on VPS to compare)
-cargo test binance_network_latency -- --ignored --nocapture
 ```
 
 | Test | Auth | What it does |
 |------|------|-------------|
+| `binance_ws_receives_prices` | No | Direct Binance WS, verify bookTicker stream + gap stats |
+| `coinbase_ws_receives_prices` | No | Direct Coinbase WS, verify ticker stream + gap stats |
+| `okx_ws_receives_prices` | No | Direct OKX WS, verify tickers stream + gap stats |
+| `binance_network_latency` | No | Network latency to Binance (50 samples via @trade stream) |
+| `coinbase_network_latency` | No | Network latency to Coinbase (50 samples via ticker timestamp) |
+| `okx_network_latency` | No | Network latency to OKX (50 samples via server timestamp) |
+| `chainlink_rtds_receives_prices` | No | Chainlink resolution prices via RTDS (15 samples, gap + latency) |
 | `pipeline_discover_fetch_detect` | No | Full pipeline: discover markets, fetch orderbook, run arb detection |
 | `rest_orderbook_returns_valid_data` | No | Validate orderbook structure and price ranges |
 | `geoblock_check` | No | Verify IP is not geo-blocked |
 | `batch_orderbook_fetch` | No | Multi-market batch orderbook fetch |
-| `binance_ws_receives_prices` | No | Direct Binance WS connection, verify price stream |
-| `binance_network_latency` | No | Measure real network latency to Binance (50 samples, min/avg/p50/p95/p99/max) |
 | `auth_clob_authenticate` | Yes | EIP-712 auth with GnosisSafe signature type |
 | `auth_check_balance_allowance` | Yes | Check USDC balance and allowances on proxy wallet |
 | `auth_build_and_sign_order` | Yes | Build and sign a FOK order (no submission) |
 | `live_post_unfillable_fok_order` | Yes | Post FOK at $0.01 (immediately killed, $0 cost) |
+
+### Measured Latencies (local, macOS)
+
+| Source | p50 | p95 | Notes |
+|--------|-----|-----|-------|
+| Binance | ~31ms | ~32ms | Direct WS, via `@trade` stream `E` field |
+| OKX | ~119ms | ~120ms | Direct WS, via server `ts` field |
+| Coinbase | ~30ms | — | Direct WS, clock offset noted (negative values) |
+| Chainlink (RTDS) | ~1.2s | ~1.5s | Via Polymarket RTDS relay (sponsored key pending for direct) |
 
 ### Lint and Format
 
@@ -238,7 +277,8 @@ Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SD
 | Language | Rust | Performance, safety, reliability |
 | Async runtime | tokio | Industry standard |
 | SDK | rs-clob-client (official) | Only trusted Polymarket Rust client |
-| Price feed | Direct Binance WS | Lowest latency (not via Polymarket RTDS relay) |
+| Price feeds | Binance + Coinbase + OKX (direct WS) | Multi-exchange cross-validation, lowest latency |
+| Resolution source | Chainlink Data Streams (planned) | Actual resolution price for 15-min markets |
 | Wallet type | GnosisSafe (Type 2) | Gasless, MetaMask compatible |
 | Fee model | 2% dynamic taker | Symmetric around 0.5, unit-tested |
 | Order type | FOK (fill-or-kill) | No partial fills, no open orders to manage |

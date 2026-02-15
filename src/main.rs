@@ -18,7 +18,9 @@ mod strategy;
 
 use config::RunMode;
 use execution::{DryRunExecutor, Executor, LiveExecutor};
-use feed::{CoinbaseFeed, CryptoPriceFeed, FeedEvent, OkxFeed, OrderbookFeed, PriceState};
+use feed::{
+    ChainlinkFeed, CoinbaseFeed, CryptoPriceFeed, FeedEvent, OkxFeed, OrderbookFeed, PriceState,
+};
 use market::MarketDiscovery;
 use monitor::TradeLogger;
 use risk::RiskManager;
@@ -171,8 +173,12 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .map(|a| feed::okx::asset_to_okx_inst_id(a))
         .collect();
-    let okx_feed = OkxFeed::new(tx);
+    let okx_feed = OkxFeed::new(tx.clone());
     okx_feed.subscribe(okx_instruments)?;
+
+    // Start Chainlink price feed via RTDS (resolution source)
+    let chainlink_feed = ChainlinkFeed::new(tx);
+    chainlink_feed.subscribe(app_config.strategy.assets.clone())?;
 
     // Build lookup: token_id -> market index + whether it's up/down
     let mut token_to_market: HashMap<String, (usize, bool)> = HashMap::new();
@@ -342,6 +348,14 @@ async fn main() -> anyhow::Result<()> {
                             symbol = %symbol,
                             price = %price,
                             "price update"
+                        );
+                    }
+                    Ok(FeedEvent::ChainlinkPrice { symbol, price, timestamp }) => {
+                        price_state.update("chainlink", &symbol, price, timestamp);
+                        debug!(
+                            symbol = %symbol,
+                            price = %price,
+                            "chainlink price update"
                         );
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {

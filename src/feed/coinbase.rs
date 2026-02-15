@@ -117,7 +117,9 @@ async fn run_coinbase_stream(
     let sub_json = serde_json::to_string(&sub_msg)
         .map_err(|e| Error::Feed(format!("failed to serialize subscribe msg: {e}")))?;
     write
-        .send(tokio_tungstenite::tungstenite::Message::Text(sub_json.into()))
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            sub_json.into(),
+        ))
         .await
         .map_err(|e| Error::Feed(format!("coinbase WS send failed: {e}")))?;
 

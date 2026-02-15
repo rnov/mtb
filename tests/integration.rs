@@ -36,7 +36,9 @@ const POLYGON_CHAIN_ID: u64 = 137;
 /// Helper: build an OrderBookSummaryRequest from a token ID string.
 fn book_request(token_id_str: &str) -> OrderBookSummaryRequest {
     let token_id = U256::from_str(token_id_str).expect("valid token ID");
-    OrderBookSummaryRequest::builder().token_id(token_id).build()
+    OrderBookSummaryRequest::builder()
+        .token_id(token_id)
+        .build()
 }
 
 /// Full pipeline: discover markets → fetch orderbook via REST → run arb detection.
@@ -218,23 +220,24 @@ async fn batch_orderbook_fetch() {
     let markets = discovery.discover().await.unwrap();
 
     if markets.len() < 2 {
-        println!("only {} market(s) found, skipping batch test", markets.len());
+        println!(
+            "only {} market(s) found, skipping batch test",
+            markets.len()
+        );
         return;
     }
 
     // Build requests for all up+down tokens
     let requests: Vec<OrderBookSummaryRequest> = markets
         .iter()
-        .flat_map(|m| {
-            vec![
-                book_request(&m.up_token_id),
-                book_request(&m.down_token_id),
-            ]
-        })
+        .flat_map(|m| vec![book_request(&m.up_token_id), book_request(&m.down_token_id)])
         .collect();
 
     let clob = ClobClient::default();
-    let books = clob.order_books(&requests).await.expect("batch fetch should succeed");
+    let books = clob
+        .order_books(&requests)
+        .await
+        .expect("batch fetch should succeed");
 
     assert_eq!(
         books.len(),
@@ -328,7 +331,10 @@ async fn auth_clob_authenticate() {
     assert!(!markets.is_empty());
 
     let request = book_request(&markets[0].up_token_id);
-    let book = client.order_book(&request).await.expect("authed orderbook call");
+    let book = client
+        .order_book(&request)
+        .await
+        .expect("authed orderbook call");
     println!(
         "auth: fetched orderbook post-auth — {} bids, {} asks",
         book.bids.len(),
@@ -387,7 +393,10 @@ async fn auth_build_and_sign_order() {
         .await
         .expect("order signing should succeed");
 
-    println!("sign: order signed successfully — signature: {:?}", signed.signature);
+    println!(
+        "sign: order signed successfully — signature: {:?}",
+        signed.signature
+    );
     // If we got here without error, the signing pipeline works
 }
 
@@ -540,7 +549,8 @@ async fn binance_ws_receives_prices() {
 
     let (tx, _) = broadcast::channel::<FeedEvent>(256);
     let feed = CryptoPriceFeed::new(tx.clone());
-    feed.subscribe(vec![asset_to_binance_symbol("BTC")]).unwrap();
+    feed.subscribe(vec![asset_to_binance_symbol("BTC")])
+        .unwrap();
 
     run_exchange_gap_test("binance", "btcusdt", tx, 15, 10).await;
 }
@@ -556,7 +566,8 @@ async fn coinbase_ws_receives_prices() {
 
     let (tx, _) = broadcast::channel::<FeedEvent>(256);
     let feed = CoinbaseFeed::new(tx.clone());
-    feed.subscribe(vec![asset_to_coinbase_product("BTC")]).unwrap();
+    feed.subscribe(vec![asset_to_coinbase_product("BTC")])
+        .unwrap();
 
     run_exchange_gap_test("coinbase", "BTC-USD", tx, 15, 15).await;
 }
@@ -791,6 +802,75 @@ async fn coinbase_network_latency() {
     print_latency_stats("Coinbase", &mut latencies_ms);
 }
 
+/// Chainlink RTDS: verify we receive resolution prices.
+/// Uses the SDK's RTDS client to subscribe to Chainlink Data Streams prices.
+#[tokio::test]
+#[ignore]
+async fn chainlink_rtds_receives_prices() {
+    use futures::StreamExt;
+    use polymarket_client_sdk::rtds::Client as RtdsClient;
+
+    println!("connecting to Polymarket RTDS for Chainlink prices...");
+
+    let client = RtdsClient::default();
+
+    let stream = client
+        .subscribe_chainlink_prices(None)
+        .expect("failed to subscribe to chainlink prices");
+
+    let mut stream = Box::pin(stream);
+    let mut count = 0;
+    let samples = 15;
+    let timeout_duration = std::time::Duration::from_secs(30);
+    let mut prev_time = std::time::Instant::now();
+    let start = std::time::Instant::now();
+
+    println!("waiting for Chainlink price updates...\n");
+
+    while count < samples {
+        match tokio::time::timeout(timeout_duration, stream.next()).await {
+            Ok(Some(Ok(price))) => {
+                let now = std::time::Instant::now();
+                let gap_ms = now.duration_since(prev_time).as_millis();
+                prev_time = now;
+
+                let local_now = chrono::Utc::now().timestamp_millis();
+                let latency = local_now - price.timestamp;
+
+                count += 1;
+                println!(
+                    "  [{:>2}] {} = ${} (gap: {}ms, latency: {}ms, ts: {})",
+                    count, price.symbol, price.value, gap_ms, latency, price.timestamp
+                );
+            }
+            Ok(Some(Err(e))) => {
+                println!("  error: {e}");
+            }
+            Ok(None) => {
+                println!("  stream ended");
+                break;
+            }
+            Err(_) => {
+                println!("  timeout after {}s", timeout_duration.as_secs());
+                break;
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+    println!(
+        "\n--- Chainlink RTDS ({count} prices in {:.1}s) ---",
+        elapsed.as_secs_f64()
+    );
+
+    // Chainlink updates less frequently than exchange feeds (deviation-based + heartbeat)
+    // We should get at least a few prices within 30s
+    assert!(
+        count >= 3,
+        "expected at least 3 Chainlink prices, got {count}"
+    );
+}
+
 /// Print latency percentile stats.
 fn print_latency_stats(name: &str, latencies_ms: &mut Vec<i64>) {
     latencies_ms.sort();
@@ -809,5 +889,7 @@ fn print_latency_stats(name: &str, latencies_ms: &mut Vec<i64>) {
     println!("  p95:  {p95}ms");
     println!("  p99:  {p99}ms");
     println!("  max:  {max}ms");
-    println!("\nNOTE: accuracy depends on NTP clock sync. Negative values = clock ahead of exchange.");
+    println!(
+        "\nNOTE: accuracy depends on NTP clock sync. Negative values = clock ahead of exchange."
+    );
 }

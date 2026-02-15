@@ -24,6 +24,12 @@ pub enum FeedEvent {
         price: Decimal,
         timestamp: i64,
     },
+    /// Chainlink resolution price from RTDS
+    ChainlinkPrice {
+        symbol: String,
+        price: Decimal,
+        timestamp: i64,
+    },
     /// Feed disconnected
     Disconnected { source: String },
     /// Feed reconnected

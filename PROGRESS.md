@@ -48,9 +48,9 @@
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ### Phase 3 Test Coverage (cumulative)
-- 38 unit tests passing (+14 from Phase 2: Binance/Coinbase/OKX parsing + symbol mapping, PriceState multi-exchange + divergence + staleness)
-- 14 live integration tests (+6: `binance_ws_receives_prices`, `coinbase_ws_receives_prices`, `okx_ws_receives_prices`, `binance_network_latency`, `coinbase_network_latency`, `okx_network_latency`)
-- Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted)
+- 40 unit tests passing (+16 from Phase 2: Binance/Coinbase/OKX/Chainlink parsing + symbol mapping, PriceState multi-exchange + divergence + staleness)
+- 15 live integration tests (+7: `binance_ws_receives_prices`, `coinbase_ws_receives_prices`, `okx_ws_receives_prices`, `binance_network_latency`, `coinbase_network_latency`, `okx_network_latency`, `chainlink_rtds_receives_prices`)
+- Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted), Chainlink RTDS ~1-1.5s (relay overhead)
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ## Architecture Notes
@@ -67,13 +67,14 @@
 - [x] **Step 1: Binance Direct Price Feed** — Direct WebSocket to `wss://stream.binance.com:9443` (NOT via Polymarket RTDS relay). Combined `bookTicker` stream for BTC/ETH/SOL/XRP. Auto-reconnect on disconnect. Processing latency logged every 1000 ticks. Network latency test via `@trade` stream (30ms from local, run on VPS to compare). 3 unit tests + 2 integration tests.
 - [x] **Step 2: Price State Manager** — Multi-exchange `PriceState` keyed by `exchange:symbol`. Tracks latest price, staleness, freshness per exchange+asset. Cross-exchange validation via `prices_agree()` for phantom arb rejection. 7 unit tests.
 - [x] **Step 3: Multi-Exchange Feeds** — Added Coinbase (`advanced-trade-ws.coinbase.com` ticker) and OKX (`ws.okx.com:8443` tickers) direct WebSocket feeds. Same auto-reconnect pattern as Binance. `FeedEvent::CryptoPrice` now includes `exchange` field. Gap + network latency tests for all 3 exchanges. Measured latency: Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset). 4 unit tests + 4 integration tests.
-- [ ] Step 4: Chainlink Data Streams — resolution source feed via RTDS
+- [x] **Step 4: Chainlink Data Streams (via RTDS)** — Resolution source feed using SDK's `subscribe_chainlink_prices()` via `wss://ws-live-data.polymarket.com`. Streams real-time Chainlink oracle prices for BTC/ETH/SOL/XRP. Added as `"chainlink"` source in `PriceState` for cross-validation. Measured latency: ~1-1.5s via RTDS relay. Sponsored Chainlink API key application pending (https://pm-ds-request.streams.chain.link/) for lower latency direct access. 2 unit tests + 1 integration test.
 - [ ] Step 5: Arb freshness guard — cross-check prices across sources, reject phantom arbs
-- [ ] Step 6: Volatility tracker — rolling window, dynamic arb confidence thresholds
-- [ ] Step 7: Multi-market prioritization — score markets by arb likelihood
-- [ ] Step 8: Backtesting / dry-run validation — log all arbs with multi-exchange context
-- [ ] Step 9: EOA implementation
-- [ ] Step 10: Deployment prep + production
+- [ ] Step 6: Bybit direct WS feed — 4th exchange, leads during volatility
+- [ ] Step 7: Volatility tracker — rolling window, dynamic arb confidence thresholds
+- [ ] Step 8: Multi-market prioritization — score markets by arb likelihood
+- [ ] Step 9: Backtesting / dry-run validation — log all arbs with multi-exchange context
+- [ ] Step 10: EOA implementation
+- [ ] Step 11: Deployment prep + production
 
 ### Feed Strategy
 Polymarket's 15-min crypto markets resolve via **Chainlink Data Streams** which aggregate
@@ -88,9 +89,20 @@ the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely
 - Coinbase WS — US-regulated, frequently in Chainlink aggregations
 - OKX WS — high volume on major pairs, leads Asian hours
 
-**Resolution source (Step 4):**
-- Chainlink Data Streams — the actual resolution price for Polymarket 15-min markets.
+**Resolution source (implemented — Step 4):**
+- Chainlink Data Streams via RTDS — the actual resolution price for Polymarket 15-min markets.
   Knowing Chainlink's price = knowing the answer before the market closes.
+  Currently via Polymarket RTDS relay (~1-1.5s latency). Sponsored Chainlink API key
+  application pending for direct access (lower latency).
+
+**Planned:**
+- Bybit WS (Step 6) — leads during volatility, key for Asian hours alongside OKX
+- Sponsored Chainlink API key — apply at https://pm-ds-request.streams.chain.link/
+
+## Future Opportunities
+- **5-minute markets**: Polymarket launched 5-min crypto markets (Feb 2026), same Chainlink
+  resolution. Same strategy applies — higher frequency = more windows per day (288/asset vs 96).
+  Requires faster execution and tighter latency budget.
 
 ## Key Decisions
 | Decision | Choice | Rationale |
