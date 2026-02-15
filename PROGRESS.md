@@ -56,7 +56,20 @@
 - Outcomes are "Up"/"Down" (not "Yes"/"No")
 - Markets are ephemeral — new slug every 15 minutes, aligned to ET
 
-## Next: Phase 3 (External Feeds + Directional Strategy)
+## Phase 3: External Feeds + Directional Strategy — IN PROGRESS
+- [x] **Step 0: Latency Instrumentation** — Timing spans across the hot path: tick-to-trade in `main.rs` (arb_us, risk_us, exec_ms, total_ms), execution breakdown in `live.rs` (auth_ms, build_ms, sign_ms, post_ms). All logged as structured tracing fields.
+- [ ] Step 1: Binance price feed (RTDS WebSocket)
+- [ ] Step 2: Price state manager
+- [ ] Step 3: Directional signal
+- [ ] Step 4: Directional strategy
+- [ ] Step 5: Strategy selector
+- [ ] Step 6: Backtesting / dry-run validation
+- [ ] Step 7: Chainlink Data Streams (optional)
+- [ ] Step 8: EOA implementation
+- [ ] Step 9: Deployment prep
+- [ ] Step 10: Production deployment
+
+## Next: Phase 3 Details
 
 ### Feed Strategy
 Polymarket's 15-min crypto markets resolve via **Chainlink Data Streams** which aggregate

@@ -46,6 +46,8 @@ impl LiveExecutor {
 
     /// Inner execution logic, called by the retry wrapper.
     async fn execute_inner(&self, opportunity: &Opportunity) -> Result<ExecutionResult> {
+        use std::time::Instant;
+
         // Build signer from private key (strip 0x prefix if present)
         let key = self
             .private_key
@@ -56,6 +58,7 @@ impl LiveExecutor {
             .with_chain_id(Some(self.chain_id));
 
         // Authenticate with CLOB (GnosisSafe = browser wallet proxy)
+        let auth_start = Instant::now();
         let client = Client::new(&self.clob_url, Config::default())
             .map_err(|e| Error::Sdk(format!("failed to create CLOB client: {e}")))?
             .authentication_builder(&signer)
@@ -63,6 +66,7 @@ impl LiveExecutor {
             .authenticate()
             .await
             .map_err(|e| Error::Sdk(format!("authentication failed: {e}")))?;
+        let auth_ms = auth_start.elapsed().as_millis();
 
         // Parse token IDs from strings to U256
         let up_token_id = U256::from_str(&opportunity.up_token_id)
@@ -75,6 +79,7 @@ impl LiveExecutor {
         let down_shares = round_shares(opportunity.suggested_size_usdc / opportunity.down_ask);
 
         // Build UP order: buy up_token at the ask price (FOK = fill-or-kill)
+        let build_start = Instant::now();
         let up_order = client
             .limit_order()
             .token_id(up_token_id)
@@ -97,8 +102,10 @@ impl LiveExecutor {
             .build()
             .await
             .map_err(|e| Error::Sdk(format!("failed to build DOWN order: {e}")))?;
+        let build_ms = build_start.elapsed().as_millis();
 
         // Sign both orders
+        let sign_start = Instant::now();
         let signed_up = client
             .sign(&signer, up_order)
             .await
@@ -107,12 +114,24 @@ impl LiveExecutor {
             .sign(&signer, down_order)
             .await
             .map_err(|e| Error::Sdk(format!("failed to sign DOWN order: {e}")))?;
+        let sign_ms = sign_start.elapsed().as_millis();
 
         // Post both orders as a batch
+        let post_start = Instant::now();
         let responses = client
             .post_orders(vec![signed_up, signed_down])
             .await
             .map_err(|e| Error::Sdk(format!("failed to post orders: {e}")))?;
+        let post_ms = post_start.elapsed().as_millis();
+
+        info!(
+            market_id = %opportunity.market_id,
+            auth_ms = auth_ms,
+            build_ms = build_ms,
+            sign_ms = sign_ms,
+            post_ms = post_ms,
+            "latency: execution breakdown"
+        );
 
         // We expect exactly 2 responses (UP, DOWN)
         if responses.len() != 2 {

@@ -167,6 +167,8 @@ async fn main() -> anyhow::Result<()> {
             result = rx.recv() => {
                 match result {
                     Ok(FeedEvent::OrderbookUpdate(update)) => {
+                        let tick_start = std::time::Instant::now();
+
                         // Record feed activity for staleness tracking
                         risk_manager.record_feed_activity();
 
@@ -192,13 +194,35 @@ async fn main() -> anyhow::Result<()> {
                                 timestamp: Utc::now(),
                             };
 
-                            // Run arb detection
-                            if let Some(opportunity) = detect_arb(&snapshot, &app_config.strategy) {
+                            // Run arb detection (pure computation — should be <1μs)
+                            let arb_start = std::time::Instant::now();
+                            let arb_result = detect_arb(&snapshot, &app_config.strategy);
+                            let arb_us = arb_start.elapsed().as_micros();
+
+                            if let Some(opportunity) = arb_result {
                                 // Risk check
-                                match risk_manager.check(&opportunity) {
+                                let risk_start = std::time::Instant::now();
+                                let risk_result = risk_manager.check(&opportunity);
+                                let risk_us = risk_start.elapsed().as_micros();
+
+                                match risk_result {
                                     Ok(()) => {
+                                        let exec_start = std::time::Instant::now();
                                         match executor.execute(&opportunity).await {
                                             Ok(result) => {
+                                                let exec_ms = exec_start.elapsed().as_millis();
+                                                let total_ms = tick_start.elapsed().as_millis();
+
+                                                info!(
+                                                    asset = %opportunity.asset,
+                                                    arb_us = arb_us,
+                                                    risk_us = risk_us,
+                                                    exec_ms = exec_ms,
+                                                    total_ms = total_ms,
+                                                    success = result.success,
+                                                    "latency: tick-to-trade"
+                                                );
+
                                                 // Log trade with full execution details
                                                 if let Err(e) = logger.log_trade(&opportunity, &result) {
                                                     error!(error = %e, "failed to write trade log");
@@ -222,7 +246,15 @@ async fn main() -> anyhow::Result<()> {
                                                 }
                                             }
                                             Err(e) => {
-                                                error!(error = %e, "execution failed");
+                                                let exec_ms = exec_start.elapsed().as_millis();
+                                                let total_ms = tick_start.elapsed().as_millis();
+
+                                                error!(
+                                                    error = %e,
+                                                    exec_ms = exec_ms,
+                                                    total_ms = total_ms,
+                                                    "execution failed"
+                                                );
                                                 #[cfg(feature = "telegram")]
                                                 if let Some(ref n) = notifier {
                                                     n.notify_execution_error(&opportunity.asset, &e.to_string()).await;
@@ -239,7 +271,14 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                     Err(e) => {
                                         let reason = e.to_string();
-                                        warn!(error = %reason, "risk check rejected opportunity");
+                                        let total_us = tick_start.elapsed().as_micros();
+                                        warn!(
+                                            error = %reason,
+                                            arb_us = arb_us,
+                                            risk_us = risk_us,
+                                            total_us = total_us,
+                                            "risk check rejected opportunity"
+                                        );
                                         // Log rejected opportunities too (for analysis)
                                         if let Err(le) = logger.log_rejected(&opportunity, &reason) {
                                             error!(error = %le, "failed to write rejection log");
