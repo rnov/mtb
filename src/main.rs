@@ -18,7 +18,7 @@ mod strategy;
 
 use config::RunMode;
 use execution::{DryRunExecutor, Executor, LiveExecutor};
-use feed::{CryptoPriceFeed, FeedEvent, OrderbookFeed};
+use feed::{CryptoPriceFeed, FeedEvent, OrderbookFeed, PriceState};
 use market::MarketDiscovery;
 use monitor::TradeLogger;
 use risk::RiskManager;
@@ -164,6 +164,9 @@ async fn main() -> anyhow::Result<()> {
     // Latest best bid/ask per token
     let mut best_asks: HashMap<String, Decimal> = HashMap::new();
     let mut best_bids: HashMap<String, Decimal> = HashMap::new();
+
+    // Price state: latest Binance prices per symbol
+    let mut price_state = PriceState::new();
 
     // Discovery refresh interval
     let discovery_interval = Duration::from_secs(app_config.discovery.poll_interval_secs);
@@ -313,6 +316,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Ok(FeedEvent::CryptoPrice { symbol, price, timestamp }) => {
+                        price_state.update(&symbol, price, timestamp);
                         debug!(
                             symbol = %symbol,
                             price = %price,

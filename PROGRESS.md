@@ -48,7 +48,7 @@
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ### Phase 3 Test Coverage (cumulative)
-- 27 unit tests passing (+3: Binance URL builder, asset-to-symbol mapping, bookTicker JSON parsing)
+- 31 unit tests passing (+7: Binance URL builder, asset-to-symbol mapping, bookTicker JSON parsing, price state update/get, overwrite, staleness, multi-symbol)
 - 10 live integration tests (+2: `binance_ws_receives_prices`, `binance_network_latency`)
 - Binance latency measured: ~30ms from local machine. Run `binance_network_latency` on VPS to compare.
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
@@ -65,7 +65,7 @@
 ## Phase 3: External Feeds + Directional Strategy — IN PROGRESS
 - [x] **Step 0: Latency Instrumentation** — Timing spans across the hot path: tick-to-trade in `main.rs` (arb_us, risk_us, exec_ms, total_ms), execution breakdown in `live.rs` (auth_ms, build_ms, sign_ms, post_ms). All logged as structured tracing fields.
 - [x] **Step 1: Binance Direct Price Feed** — Direct WebSocket to `wss://stream.binance.com:9443` (NOT via Polymarket RTDS relay). Combined `bookTicker` stream for BTC/ETH/SOL/XRP. Auto-reconnect on disconnect. Processing latency logged every 1000 ticks. Network latency test via `@trade` stream (30ms from local, run on VPS to compare). 3 unit tests + 2 integration tests.
-- [ ] Step 2: Price state manager
+- [x] **Step 2: Price State Manager** — In-memory `PriceState` store keyed by Binance symbol. Tracks latest price, update time, and staleness per asset. Query by symbol (`get`) or config asset name (`get_by_asset("BTC")`). Freshness check (`is_fresh`) for strategy gating. 4 unit tests.
 - [ ] Step 3: Directional signal
 - [ ] Step 4: Directional strategy
 - [ ] Step 5: Strategy selector
