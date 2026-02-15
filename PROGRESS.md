@@ -48,9 +48,9 @@
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ### Phase 3 Test Coverage (cumulative)
-- 31 unit tests passing (+7: Binance URL builder, asset-to-symbol mapping, bookTicker JSON parsing, price state update/get, overwrite, staleness, multi-symbol)
-- 10 live integration tests (+2: `binance_ws_receives_prices`, `binance_network_latency`)
-- Binance latency measured: ~30ms from local machine. Run `binance_network_latency` on VPS to compare.
+- 38 unit tests passing (+14 from Phase 2: Binance/Coinbase/OKX parsing + symbol mapping, PriceState multi-exchange + divergence + staleness)
+- 14 live integration tests (+6: `binance_ws_receives_prices`, `coinbase_ws_receives_prices`, `okx_ws_receives_prices`, `binance_network_latency`, `coinbase_network_latency`, `okx_network_latency`)
+- Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted)
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ## Architecture Notes
@@ -62,46 +62,35 @@
 - Outcomes are "Up"/"Down" (not "Yes"/"No")
 - Markets are ephemeral — new slug every 15 minutes, aligned to ET
 
-## Phase 3: External Feeds + Directional Strategy — IN PROGRESS
+## Phase 3: External Feeds + Arb Validation — IN PROGRESS
 - [x] **Step 0: Latency Instrumentation** — Timing spans across the hot path: tick-to-trade in `main.rs` (arb_us, risk_us, exec_ms, total_ms), execution breakdown in `live.rs` (auth_ms, build_ms, sign_ms, post_ms). All logged as structured tracing fields.
 - [x] **Step 1: Binance Direct Price Feed** — Direct WebSocket to `wss://stream.binance.com:9443` (NOT via Polymarket RTDS relay). Combined `bookTicker` stream for BTC/ETH/SOL/XRP. Auto-reconnect on disconnect. Processing latency logged every 1000 ticks. Network latency test via `@trade` stream (30ms from local, run on VPS to compare). 3 unit tests + 2 integration tests.
-- [x] **Step 2: Price State Manager** — In-memory `PriceState` store keyed by Binance symbol. Tracks latest price, update time, and staleness per asset. Query by symbol (`get`) or config asset name (`get_by_asset("BTC")`). Freshness check (`is_fresh`) for strategy gating. 4 unit tests.
-- [ ] Step 3: Directional signal
-- [ ] Step 4: Directional strategy
-- [ ] Step 5: Strategy selector
-- [ ] Step 6: Backtesting / dry-run validation
-- [ ] Step 7: Chainlink Data Streams (optional)
-- [ ] Step 8: EOA implementation
-- [ ] Step 9: Deployment prep
-- [ ] Step 10: Production deployment
-
-## Next: Phase 3 Details
+- [x] **Step 2: Price State Manager** — Multi-exchange `PriceState` keyed by `exchange:symbol`. Tracks latest price, staleness, freshness per exchange+asset. Cross-exchange validation via `prices_agree()` for phantom arb rejection. 7 unit tests.
+- [x] **Step 3: Multi-Exchange Feeds** — Added Coinbase (`advanced-trade-ws.coinbase.com` ticker) and OKX (`ws.okx.com:8443` tickers) direct WebSocket feeds. Same auto-reconnect pattern as Binance. `FeedEvent::CryptoPrice` now includes `exchange` field. Gap + network latency tests for all 3 exchanges. Measured latency: Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset). 4 unit tests + 4 integration tests.
+- [ ] Step 4: Chainlink Data Streams — resolution source feed via RTDS
+- [ ] Step 5: Arb freshness guard — cross-check prices across sources, reject phantom arbs
+- [ ] Step 6: Volatility tracker — rolling window, dynamic arb confidence thresholds
+- [ ] Step 7: Multi-market prioritization — score markets by arb likelihood
+- [ ] Step 8: Backtesting / dry-run validation — log all arbs with multi-exchange context
+- [ ] Step 9: EOA implementation
+- [ ] Step 10: Deployment prep + production
 
 ### Feed Strategy
 Polymarket's 15-min crypto markets resolve via **Chainlink Data Streams** which aggregate
-from multiple exchanges. To detect edges before Polymarket odds adjust, we need external
-price feeds that **lead** Chainlink:
+from multiple exchanges. More price sources = higher confidence that a detected arb is
+real (not phantom from stale orderbooks). If all exchanges agree the price is stable,
+the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely phantom.
 
-**Primary (must-have):**
-- Binance WS (spot/perp) — highest volume, primary price leader. Already supported via
-  SDK's RTDS module (`subscribe_crypto_prices`). Symbols: btcusdt, ethusdt, solusdt, xrpusdt.
-- Chainlink Data Streams — direct low-latency feed for resolution price estimates.
-  Requires sponsored API key (request via Polymarket/Chainlink).
+**Primary (implemented):**
+- Binance WS (direct bookTicker) — highest volume, primary price leader
 
-**Secondary (confirmation/momentum):**
-- Bybit — fast during volatility, strong perps/futures
-- OKX — high volume on major pairs, leads Asian hours
-- Coinbase/Kraken — US-regulated, frequently in Chainlink aggregations
+**Validation sources (Step 3):**
+- Coinbase WS — US-regulated, frequently in Chainlink aggregations
+- OKX WS — high volume on major pairs, leads Asian hours
 
-**Cross-venue (Phase 4):**
-- Kalshi — CFTC-regulated fiat prediction market, main cross-arb rival for overlapping events
-
-### Implementation Plan
-- [ ] `feed/crypto_price.rs` — RTDS Binance price feed (SDK built-in)
-- [ ] `feed/chainlink.rs` — Direct Chainlink Data Streams (sponsored key)
-- [ ] `strategy/directional.rs` — Directional signal: predict Chainlink resolution from
-  leading exchange prices, bet Up/Down when Polymarket odds lag
-- [ ] `monitor/metrics.rs` — Prometheus endpoint
+**Resolution source (Step 4):**
+- Chainlink Data Streams — the actual resolution price for Polymarket 15-min markets.
+  Knowing Chainlink's price = knowing the answer before the market closes.
 
 ## Key Decisions
 | Decision | Choice | Rationale |
@@ -112,7 +101,9 @@ price feeds that **lead** Chainlink:
 | Assets | BTC, ETH, SOL, XRP | All 4 live 15-min markets on Polymarket |
 | Discovery | Slug-based (`{asset}-updown-15m-{epoch}`) | Ephemeral markets not in Gamma pagination |
 | Fee model | 2% dynamic taker fee | Symmetric around 0.5, validated with unit tests |
-| Primary price signal | Binance (via RTDS) | Highest volume, leads Chainlink aggregation |
+| Strategy | Pure arb (buy both sides < $1.00) | Risk-free, guaranteed profit regardless of outcome |
+| Price feeds | Binance + Coinbase + OKX (direct WS) | Multi-exchange cross-validation for phantom arb rejection |
+| Resolution source | Chainlink Data Streams | Actual resolution price for 15-min markets |
 
 ## Deployment
 - **VPS**: Amsterdam (Hetzner to start, ~€10/month). Best latency tradeoff: ~5-10ms to

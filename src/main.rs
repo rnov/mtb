@@ -18,7 +18,7 @@ mod strategy;
 
 use config::RunMode;
 use execution::{DryRunExecutor, Executor, LiveExecutor};
-use feed::{CryptoPriceFeed, FeedEvent, OrderbookFeed, PriceState};
+use feed::{CoinbaseFeed, CryptoPriceFeed, FeedEvent, OkxFeed, OrderbookFeed, PriceState};
 use market::MarketDiscovery;
 use monitor::TradeLogger;
 use risk::RiskManager;
@@ -151,8 +151,28 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .map(|a| feed::crypto_price::asset_to_binance_symbol(a))
         .collect();
-    let price_feed = CryptoPriceFeed::new(tx);
+    let price_feed = CryptoPriceFeed::new(tx.clone());
     price_feed.subscribe(binance_symbols)?;
+
+    // Start Coinbase direct price feed
+    let coinbase_products: Vec<String> = app_config
+        .strategy
+        .assets
+        .iter()
+        .map(|a| feed::coinbase::asset_to_coinbase_product(a))
+        .collect();
+    let coinbase_feed = CoinbaseFeed::new(tx.clone());
+    coinbase_feed.subscribe(coinbase_products)?;
+
+    // Start OKX direct price feed
+    let okx_instruments: Vec<String> = app_config
+        .strategy
+        .assets
+        .iter()
+        .map(|a| feed::okx::asset_to_okx_inst_id(a))
+        .collect();
+    let okx_feed = OkxFeed::new(tx);
+    okx_feed.subscribe(okx_instruments)?;
 
     // Build lookup: token_id -> market index + whether it's up/down
     let mut token_to_market: HashMap<String, (usize, bool)> = HashMap::new();
@@ -315,13 +335,13 @@ async fn main() -> anyhow::Result<()> {
                             n.notify_reconnect(&source).await;
                         }
                     }
-                    Ok(FeedEvent::CryptoPrice { symbol, price, timestamp }) => {
-                        price_state.update(&symbol, price, timestamp);
+                    Ok(FeedEvent::CryptoPrice { exchange, symbol, price, timestamp }) => {
+                        price_state.update(&exchange, &symbol, price, timestamp);
                         debug!(
+                            exchange = %exchange,
                             symbol = %symbol,
                             price = %price,
-                            timestamp = timestamp,
-                            "binance price"
+                            "price update"
                         );
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {

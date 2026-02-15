@@ -178,6 +178,7 @@ async fn run_binance_stream(
         );
 
         let _ = tx.send(FeedEvent::CryptoPrice {
+            exchange: "binance".into(),
             symbol,
             price: mid,
             timestamp,

@@ -17,8 +17,9 @@ pub struct BestBidAsk {
 pub enum FeedEvent {
     /// Orderbook update for a token
     OrderbookUpdate(BestBidAsk),
-    /// Crypto price update (Phase 3)
+    /// Crypto price update from an external exchange
     CryptoPrice {
+        exchange: String,
         symbol: String,
         price: Decimal,
         timestamp: i64,
