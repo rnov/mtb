@@ -14,17 +14,16 @@ pub fn load_config(path: &str) -> Result<AppConfig> {
 }
 
 /// Load secrets from environment variables (.env loaded via dotenvy).
-pub fn load_secrets() -> Result<Secrets> {
+/// Private key is optional (not needed for dry-run mode).
+pub fn load_secrets() -> Secrets {
     // dotenvy::dotenv() is best-effort — missing .env is fine if env vars are set directly
     let _ = dotenvy::dotenv();
 
-    let private_key = std::env::var("POLYMARKET_PRIVATE_KEY")
-        .map_err(|_| Error::Config("POLYMARKET_PRIVATE_KEY not set".into()))?;
-
+    let private_key = std::env::var("POLYMARKET_PRIVATE_KEY").unwrap_or_default();
     let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN").ok();
 
-    Ok(Secrets {
+    Secrets {
         private_key,
         telegram_bot_token,
-    })
+    }
 }

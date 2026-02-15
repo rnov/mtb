@@ -28,13 +28,7 @@ use strategy::{detect_arb, MarketSnapshot};
 async fn main() -> anyhow::Result<()> {
     // Load configuration
     let app_config = config::load_config("config.toml")?;
-    let secrets = config::load_secrets().unwrap_or_else(|e| {
-        eprintln!("Warning: {e} (ok for dry-run mode)");
-        config::Secrets {
-            private_key: String::new(),
-            telegram_bot_token: None,
-        }
-    });
+    let secrets = config::load_secrets();
 
     // Initialize tracing
     tracing_subscriber::fmt()

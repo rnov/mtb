@@ -22,3 +22,6 @@ assets = ["BTC", "ETH", "SOL", "XRP"]
 [logging]
 trade_log_path = "logs/trades.jsonl"
 filter = "mtb=debug,info"
+
+[telegram]
+chat_id=0

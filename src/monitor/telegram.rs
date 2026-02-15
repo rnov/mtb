@@ -49,6 +49,12 @@ impl Notifier {
                 move |bot: Bot, msg: Message, risk: Arc<RiskManager>| {
                     let authorized = authorized_chat;
                     async move {
+                        info!(
+                            chat_id = msg.chat.id.0,
+                            text = ?msg.text(),
+                            "received telegram message"
+                        );
+
                         // Only respond to authorized chat
                         if msg.chat.id != authorized {
                             warn!(
@@ -90,7 +96,7 @@ impl Notifier {
                                 bot.send_message(msg.chat.id, help).await?;
                             }
                             Err(_) => {
-                                // Not a recognized command — ignore silently
+                                info!(text = text, "unrecognized command, ignoring");
                             }
                         }
 
@@ -99,12 +105,13 @@ impl Notifier {
                 },
             );
 
+            info!("starting teloxide dispatcher (long polling)...");
             Dispatcher::builder(bot, handler)
                 .dependencies(dptree::deps![risk_manager])
-                .enable_ctrlc_handler()
                 .build()
                 .dispatch()
                 .await;
+            warn!("teloxide dispatcher exited");
         });
 
         info!("telegram command handler started");

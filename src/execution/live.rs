@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use rust_decimal::Decimal;
 use tracing::{error, info, warn};
 
-use polymarket_client_sdk::clob::types::{OrderType, Side};
+use polymarket_client_sdk::clob::types::{OrderType, Side, SignatureType};
 use polymarket_client_sdk::clob::{Client, Config};
 use polymarket_client_sdk::types::U256;
 
@@ -30,6 +30,7 @@ pub struct LiveExecutor {
     clob_url: String,
     chain_id: u64,
     private_key: String,
+    signature_type: SignatureType,
 }
 
 impl LiveExecutor {
@@ -38,20 +39,27 @@ impl LiveExecutor {
             clob_url,
             chain_id,
             private_key,
+            // GnosisSafe = browser wallet (MetaMask) login; uses proxy wallet
+            signature_type: SignatureType::GnosisSafe,
         }
     }
 
     /// Inner execution logic, called by the retry wrapper.
     async fn execute_inner(&self, opportunity: &Opportunity) -> Result<ExecutionResult> {
-        // Build signer from private key
-        let signer = LocalSigner::from_str(&self.private_key)
+        // Build signer from private key (strip 0x prefix if present)
+        let key = self
+            .private_key
+            .strip_prefix("0x")
+            .unwrap_or(&self.private_key);
+        let signer = LocalSigner::from_str(key)
             .map_err(|e| Error::Execution(format!("invalid private key: {e}")))?
             .with_chain_id(Some(self.chain_id));
 
-        // Authenticate with CLOB
+        // Authenticate with CLOB (GnosisSafe = browser wallet proxy)
         let client = Client::new(&self.clob_url, Config::default())
             .map_err(|e| Error::Sdk(format!("failed to create CLOB client: {e}")))?
             .authentication_builder(&signer)
+            .signature_type(self.signature_type)
             .authenticate()
             .await
             .map_err(|e| Error::Sdk(format!("authentication failed: {e}")))?;

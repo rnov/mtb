@@ -29,8 +29,8 @@
 - [x] `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 - [x] Live dry-run verified: discovers 4 markets, streams orderbook data, runs arb detection in real-time
 
-## Phase 2: Live Execution + Safety — IN PROGRESS
-- [x] **Step 1: SDK Authentication** — `LocalSigner` from private key + `ClobClient` EIP-712 auth flow
+## Phase 2: Live Execution + Safety — COMPLETE
+- [x] **Step 1: SDK Authentication** — `LocalSigner` from private key + `ClobClient` EIP-712 auth flow, `SignatureType::GnosisSafe` for MetaMask proxy wallet
 - [x] **Step 2: Order Building** — `Opportunity` → two FOK limit orders (UP + DOWN) with correct token_id/price/size
 - [x] **Step 3: LiveExecutor** — Full `Executor` trait impl: auth → build → sign → batch post → response handling
 - [x] **Step 4: Execution Error Handling** — 3 retries with exponential backoff (200ms/400ms/800ms), 10s timeout, partial fill detection (4-way match on UP/DOWN success), transient vs permanent error classification
@@ -39,14 +39,16 @@
 - [x] **Step 7: Trade Logger Enhancements** — `TradeRecord` struct with opportunity + outcome. `log_trade()` and `log_rejected()` in main loop. All trades (success/fail) and risk-rejected opportunities logged to JSON lines.
 - [x] **Step 8: Telegram Bot — Alerts** — `Notifier` struct with alert methods: trade filled/failed, execution error, disconnect/reconnect, kill switch, startup. Feature-gated behind `#[cfg(feature = "telegram")]`.
 - [x] **Step 9: Telegram Bot — Commands** — `/status`, `/kill`, `/resume`, `/help`. teloxide `Dispatcher` in background task. Only responds to authorized `chat_id`. `RiskManager` wrapped in `Arc` for sharing.
-- [x] **Step 10: Integration Testing** — 4 integration tests hitting real Polymarket APIs (no auth needed): full pipeline (discover → REST orderbook → arb detect), orderbook validation, geoblock check, batch orderbook fetch. Plus 1 discovery test from Phase 1.
+- [x] **Step 10: Integration Testing** — 8 integration tests: 4 unauthenticated (pipeline, orderbook, geoblock, batch fetch) + 4 authenticated (CLOB auth, balance check, build+sign, live FOK post). All verified against real Polymarket APIs.
 
 ### Phase 2 Test Coverage
 - 24 unit tests passing (fees, arb, risk: feed disconnect, staleness, adaptive backoff, backoff scaling, backoff clear, feed activity reset, position limits, daily loss, failure tracking)
-- 5 live integration tests (`#[ignore]`): market discovery, full pipeline, REST orderbook, geoblock, batch fetch
+- 8 live integration tests (`#[ignore]`): market discovery, full pipeline, REST orderbook, geoblock, batch fetch, CLOB auth, build+sign order, live FOK order post
+- Authenticated tests verified: EIP-712 auth, $9 USDC balance visible, USDC allowances set, order submission pipeline working
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ## Architecture Notes
+- **Wallet**: MetaMask EOA private key + `SignatureType::GnosisSafe` (type 2). SDK auto-derives proxy wallet address via CREATE2. Funds deposited through Polymarket UI go to proxy wallet. CLOB authenticates with EOA key, trades from proxy.
 - `.deps/rs-clob-client/` is a local clone for reading source only; not used by build
 - SDK dependency is pulled from GitHub via git in `Cargo.toml`
 - `.gitignore` excludes `/target`, `.deps/`, `.env`, `.claude`

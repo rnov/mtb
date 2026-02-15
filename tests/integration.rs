@@ -3,13 +3,17 @@
 //! These tests are `#[ignore]` by default. Run with:
 //!   cargo test -- --ignored
 //!
-//! They require network access but no authentication (no wallet/private key needed).
+//! Unauthenticated tests require only network access.
+//! Authenticated tests (auth_*, live_*) also require POLYMARKET_PRIVATE_KEY in .env.
 
 use std::str::FromStr;
 
+use alloy::signers::local::LocalSigner;
+use alloy::signers::Signer as _;
 use chrono::Utc;
 use polymarket_client_sdk::clob::types::request::OrderBookSummaryRequest;
-use polymarket_client_sdk::clob::Client as ClobClient;
+use polymarket_client_sdk::clob::types::{OrderType, Side, SignatureType};
+use polymarket_client_sdk::clob::{Client as ClobClient, Config};
 use polymarket_client_sdk::types::U256;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -17,6 +21,17 @@ use rust_decimal_macros::dec;
 use mtb::config::types::{DiscoveryConfig, StrategyConfig};
 use mtb::market::MarketDiscovery;
 use mtb::strategy::{detect_arb, MarketSnapshot};
+
+/// Load private key from .env. Strips `0x` prefix if present. Panics if not set.
+fn load_private_key() -> String {
+    let _ = dotenvy::dotenv();
+    let key = std::env::var("POLYMARKET_PRIVATE_KEY")
+        .expect("POLYMARKET_PRIVATE_KEY must be set in .env for auth tests");
+    key.strip_prefix("0x").unwrap_or(&key).to_string()
+}
+
+const CLOB_URL: &str = "https://clob.polymarket.com";
+const POLYGON_CHAIN_ID: u64 = 137;
 
 /// Helper: build an OrderBookSummaryRequest from a token ID string.
 fn book_request(token_id_str: &str) -> OrderBookSummaryRequest {
@@ -242,4 +257,210 @@ async fn batch_orderbook_fetch() {
             market.asset, up_ask, down_ask, combined
         );
     }
+}
+
+// =============================================================================
+// Authenticated tests — require POLYMARKET_PRIVATE_KEY in .env
+// =============================================================================
+
+/// Diagnostic: check USDC balance and allowance on the CLOB.
+/// Uses GnosisSafe signature type (browser wallet / MetaMask login).
+#[tokio::test]
+#[ignore]
+async fn auth_check_balance_allowance() {
+    use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
+    use polymarket_client_sdk::clob::types::AssetType;
+
+    let private_key = load_private_key();
+    let signer = LocalSigner::from_str(&private_key)
+        .expect("valid private key")
+        .with_chain_id(Some(POLYGON_CHAIN_ID));
+
+    let client = ClobClient::new(CLOB_URL, Config::default())
+        .expect("create CLOB client")
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .expect("auth should succeed");
+
+    let request = BalanceAllowanceRequest::builder()
+        .asset_type(AssetType::Collateral)
+        .signature_type(SignatureType::GnosisSafe)
+        .build();
+    let response = client
+        .balance_allowance(request)
+        .await
+        .expect("balance_allowance call should succeed");
+
+    println!("balance: {}", response.balance);
+    println!("allowances: {:?}", response.allowances);
+}
+
+/// Test 1: Verify CLOB authentication works with our private key.
+/// Uses GnosisSafe signature type (MetaMask browser wallet).
+#[tokio::test]
+#[ignore]
+async fn auth_clob_authenticate() {
+    let private_key = load_private_key();
+
+    let signer = LocalSigner::from_str(&private_key)
+        .expect("valid private key")
+        .with_chain_id(Some(POLYGON_CHAIN_ID));
+
+    let client = ClobClient::new(CLOB_URL, Config::default())
+        .expect("create CLOB client")
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .expect("EIP-712 authentication should succeed");
+
+    println!("auth: CLOB authentication successful (GnosisSafe)");
+
+    // Use the authenticated client to read an orderbook (proves the client works post-auth)
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty());
+
+    let request = book_request(&markets[0].up_token_id);
+    let book = client.order_book(&request).await.expect("authed orderbook call");
+    println!(
+        "auth: fetched orderbook post-auth — {} bids, {} asks",
+        book.bids.len(),
+        book.asks.len()
+    );
+}
+
+/// Test 2: Build and sign an order without posting it.
+/// Verifies the full order construction pipeline works with real market data.
+#[tokio::test]
+#[ignore]
+async fn auth_build_and_sign_order() {
+    let private_key = load_private_key();
+
+    let signer = LocalSigner::from_str(&private_key)
+        .expect("valid private key")
+        .with_chain_id(Some(POLYGON_CHAIN_ID));
+
+    let client = ClobClient::new(CLOB_URL, Config::default())
+        .expect("create CLOB client")
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .expect("authentication should succeed");
+
+    // Discover a real market for valid token IDs
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty());
+    let market = &markets[0];
+
+    let token_id = U256::from_str(&market.up_token_id).unwrap();
+
+    // Build a FOK buy order at $0.01 (intentionally low — would never fill)
+    let order = client
+        .limit_order()
+        .token_id(token_id)
+        .price(dec!(0.01))
+        .size(dec!(100.0)) // 100 shares at $0.01 = $1 notional
+        .side(Side::Buy)
+        .order_type(OrderType::FOK)
+        .build()
+        .await
+        .expect("order build should succeed");
+
+    println!("build: order built successfully — {:?}", order.order_type);
+
+    // Sign the order (does NOT post it)
+    let signed = client
+        .sign(&signer, order)
+        .await
+        .expect("order signing should succeed");
+
+    println!("sign: order signed successfully — signature: {:?}", signed.signature);
+    // If we got here without error, the signing pipeline works
+}
+
+/// Test 3: Post a single FOK order at an impossible price ($0.01).
+/// The order will be immediately rejected (FOK at $0.01 won't fill).
+/// This verifies the full submission pipeline end-to-end. Cost: $0.
+#[tokio::test]
+#[ignore]
+async fn live_post_unfillable_fok_order() {
+    let private_key = load_private_key();
+
+    let signer = LocalSigner::from_str(&private_key)
+        .expect("valid private key")
+        .with_chain_id(Some(POLYGON_CHAIN_ID));
+
+    let client = ClobClient::new(CLOB_URL, Config::default())
+        .expect("create CLOB client")
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .expect("authentication should succeed");
+
+    // Discover a real market
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty());
+    let market = &markets[0];
+
+    let token_id = U256::from_str(&market.up_token_id).unwrap();
+
+    // Build a FOK buy at $0.01 — no seller will fill at this price
+    let order = client
+        .limit_order()
+        .token_id(token_id)
+        .price(dec!(0.01))
+        .size(dec!(100.0))
+        .side(Side::Buy)
+        .order_type(OrderType::FOK)
+        .build()
+        .await
+        .expect("order build should succeed");
+
+    let signed = client
+        .sign(&signer, order)
+        .await
+        .expect("order signing should succeed");
+
+    // Post the order — FOK at $0.01 will not fill, so no cost.
+    // The CLOB returns a 400 for FOK rejections, which the SDK surfaces as an error.
+    // This is the expected behavior — the order reached the matching engine and was killed.
+    match client.post_order(signed).await {
+        Ok(response) => {
+            println!(
+                "post: order_id={}, success={}, error={:?}",
+                response.order_id, response.success, response.error_msg
+            );
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("fully filled")
+                    || err_msg.contains("FOK")
+                    || err_msg.contains("killed"),
+                "unexpected error (not a FOK rejection): {err_msg}"
+            );
+            println!("post: FOK correctly rejected — {err_msg}");
+        }
+    }
+
+    println!("post: full order submission pipeline verified");
 }
