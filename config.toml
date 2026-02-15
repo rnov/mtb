@@ -7,6 +7,9 @@ chain_id = 137
 min_arb_profit = "0.005"
 assets = ["BTC", "ETH", "SOL", "XRP"]
 max_order_size_usdc = "50"
+min_fresh_sources = 2        # need at least 2 exchanges with fresh prices
+max_price_age_ms = 2000      # exchange prices older than 2s are stale
+max_divergence_pct = "0.5"   # reject arb if exchanges diverge >0.5%
 
 [risk]
 max_exposure_usdc = "500"

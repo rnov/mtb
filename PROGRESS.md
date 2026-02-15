@@ -48,8 +48,8 @@
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ### Phase 3 Test Coverage (cumulative)
-- 40 unit tests passing (+16 from Phase 2: Binance/Coinbase/OKX/Chainlink parsing + symbol mapping, PriceState multi-exchange + divergence + staleness)
-- 15 live integration tests (+7: `binance_ws_receives_prices`, `coinbase_ws_receives_prices`, `okx_ws_receives_prices`, `binance_network_latency`, `coinbase_network_latency`, `okx_network_latency`, `chainlink_rtds_receives_prices`)
+- 48 unit tests passing (+24 from Phase 2: feeds parsing/mapping, PriceState, freshness guard)
+- 15 live integration tests (+7: exchange gap/latency tests, Chainlink RTDS)
 - Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted), Chainlink RTDS ~1-1.5s (relay overhead)
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
@@ -68,7 +68,7 @@
 - [x] **Step 2: Price State Manager** — Multi-exchange `PriceState` keyed by `exchange:symbol`. Tracks latest price, staleness, freshness per exchange+asset. Cross-exchange validation via `prices_agree()` for phantom arb rejection. 7 unit tests.
 - [x] **Step 3: Multi-Exchange Feeds** — Added Coinbase (`advanced-trade-ws.coinbase.com` ticker) and OKX (`ws.okx.com:8443` tickers) direct WebSocket feeds. Same auto-reconnect pattern as Binance. `FeedEvent::CryptoPrice` now includes `exchange` field. Gap + network latency tests for all 3 exchanges. Measured latency: Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset). 4 unit tests + 4 integration tests.
 - [x] **Step 4: Chainlink Data Streams (via RTDS)** — Resolution source feed using SDK's `subscribe_chainlink_prices()` via `wss://ws-live-data.polymarket.com`. Streams real-time Chainlink oracle prices for BTC/ETH/SOL/XRP. Added as `"chainlink"` source in `PriceState` for cross-validation. Measured latency: ~1-1.5s via RTDS relay. Sponsored Chainlink API key application pending (https://pm-ds-request.streams.chain.link/) for lower latency direct access. 2 unit tests + 1 integration test.
-- [ ] Step 5: Arb freshness guard — cross-check prices across sources, reject phantom arbs
+- [x] **Step 5: Arb Freshness Guard** — `validate_freshness()` between arb detection and risk check. 3 checks: sufficient fresh exchange sources (default 2), price staleness (<2s), cross-exchange price agreement (<0.5% divergence). Config-driven thresholds in `StrategyConfig`. Rejected arbs logged to trade log. 8 unit tests.
 - [ ] Step 6: Bybit direct WS feed — 4th exchange, leads during volatility
 - [ ] Step 7: Volatility tracker — rolling window, dynamic arb confidence thresholds
 - [ ] Step 8: Multi-market prioritization — score markets by arb likelihood

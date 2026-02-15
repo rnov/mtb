@@ -32,6 +32,27 @@ pub struct StrategyConfig {
     pub assets: Vec<String>,
     /// Maximum order size in USDC
     pub max_order_size_usdc: Decimal,
+    /// Minimum number of fresh exchange price sources required to validate an arb
+    #[serde(default = "default_min_fresh_sources")]
+    pub min_fresh_sources: usize,
+    /// Maximum age (ms) of exchange prices before considered stale
+    #[serde(default = "default_max_price_age_ms")]
+    pub max_price_age_ms: u64,
+    /// Maximum price divergence (%) between exchanges before rejecting arb
+    #[serde(default = "default_max_divergence_pct")]
+    pub max_divergence_pct: Decimal,
+}
+
+fn default_min_fresh_sources() -> usize {
+    2
+}
+
+fn default_max_price_age_ms() -> u64 {
+    2000
+}
+
+fn default_max_divergence_pct() -> Decimal {
+    Decimal::new(5, 1) // 0.5%
 }
 
 #[derive(Debug, Clone, Deserialize)]

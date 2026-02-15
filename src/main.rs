@@ -24,7 +24,7 @@ use feed::{
 use market::MarketDiscovery;
 use monitor::TradeLogger;
 use risk::RiskManager;
-use strategy::{detect_arb, MarketSnapshot};
+use strategy::{detect_arb, validate_freshness, MarketSnapshot};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -239,6 +239,31 @@ async fn main() -> anyhow::Result<()> {
                             let arb_us = arb_start.elapsed().as_micros();
 
                             if let Some(opportunity) = arb_result {
+                                // Freshness guard — validate against exchange prices
+                                let fresh_start = std::time::Instant::now();
+                                let fresh_result = validate_freshness(
+                                    &opportunity,
+                                    &price_state,
+                                    &app_config.strategy,
+                                );
+                                let fresh_us = fresh_start.elapsed().as_micros();
+
+                                if let Err(reason) = fresh_result {
+                                    let total_us = tick_start.elapsed().as_micros();
+                                    debug!(
+                                        asset = %opportunity.asset,
+                                        reason = %reason,
+                                        arb_us = arb_us,
+                                        fresh_us = fresh_us,
+                                        total_us = total_us,
+                                        "freshness guard rejected arb"
+                                    );
+                                    if let Err(le) = logger.log_rejected(&opportunity, &reason.to_string()) {
+                                        error!(error = %le, "failed to write rejection log");
+                                    }
+                                    continue;
+                                }
+
                                 // Risk check
                                 let risk_start = std::time::Instant::now();
                                 let risk_result = risk_manager.check(&opportunity);

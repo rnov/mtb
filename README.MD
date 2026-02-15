@@ -54,7 +54,7 @@ To switch to live trading, change `mode = "live"` in `config.toml`. Requires fun
 | Section | Key fields |
 |---------|-----------|
 | `mode` | `"dry_run"` or `"live"` |
-| `[strategy]` | `min_arb_profit`, `assets`, `max_order_size_usdc` |
+| `[strategy]` | `min_arb_profit`, `assets`, `max_order_size_usdc`, `min_fresh_sources`, `max_price_age_ms`, `max_divergence_pct` |
 | `[risk]` | `max_exposure_usdc`, `max_daily_loss_usdc`, `max_consecutive_failures`, `feed_disconnect_timeout_secs` |
 | `[discovery]` | `poll_interval_secs`, `assets` |
 | `[telegram]` | `chat_id` |
@@ -109,8 +109,12 @@ Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
            Strategy Engine (pure, no IO)
            - build MarketSnapshot
            - detect arb (up_ask + down_ask < 1.0)
-           - cross-validate with PriceState
            - calculate fees precisely
+                   v
+           Freshness Guard (pure, no IO)
+           - enough fresh exchange sources?
+           - prices stale? (>2s = reject)
+           - exchanges agree? (<0.5% divergence)
                    v
            Risk Manager (sync, RwLock)
            - position limit check
@@ -158,6 +162,7 @@ src/
   strategy/
     mod.rs                Re-exports
     arb.rs                Pure arb: up_ask + down_ask < 1.0 after fees
+    freshness.rs          Freshness guard: validate arb against exchange prices
     fees.rs               Polymarket dynamic taker fee model (2% rate)
     types.rs              MarketSnapshot, Opportunity, OpportunityKind
 
@@ -179,7 +184,7 @@ src/
 
 ## Testing
 
-### Unit Tests (40)
+### Unit Tests (48)
 
 Fast, no network. Run anytime:
 
@@ -187,7 +192,7 @@ Fast, no network. Run anytime:
 cargo test
 ```
 
-Covers: fee model (11), arb detection (5), risk manager (7), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (7), position limits (3).
+Covers: fee model (11), arb detection (5), freshness guard (8), risk manager (7), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (7), position limits (3).
 
 ### Integration Tests (15)
 

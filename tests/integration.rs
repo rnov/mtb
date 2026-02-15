@@ -113,6 +113,9 @@ async fn pipeline_discover_fetch_detect() {
         min_arb_profit: dec!(0.001),
         assets: vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()],
         max_order_size_usdc: dec!(100),
+        min_fresh_sources: 2,
+        max_price_age_ms: 2000,
+        max_divergence_pct: dec!(0.5),
     };
 
     match detect_arb(&snapshot, &strategy_config) {

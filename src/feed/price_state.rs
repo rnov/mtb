@@ -116,6 +116,33 @@ impl PriceState {
             .unwrap_or(false)
     }
 
+    /// Count how many exchanges have fresh (within max_age) price data for an asset.
+    pub fn count_fresh_sources(&self, asset: &str, max_age: Duration) -> usize {
+        self.get_all_for_asset(asset)
+            .iter()
+            .filter(|e| e.updated_at.elapsed() <= max_age)
+            .count()
+    }
+
+    /// Get the max divergence percentage between any two exchanges for an asset.
+    /// Returns None if fewer than 2 sources have data.
+    pub fn max_divergence_pct(&self, asset: &str) -> Option<Decimal> {
+        let entries = self.get_all_for_asset(asset);
+        if entries.len() < 2 {
+            return None;
+        }
+
+        let prices: Vec<Decimal> = entries.iter().map(|e| e.price).collect();
+        let min_price = prices.iter().min().unwrap();
+        let max_price = prices.iter().max().unwrap();
+
+        if *min_price == Decimal::ZERO {
+            return None;
+        }
+
+        Some((*max_price - *min_price) / *min_price * Decimal::ONE_HUNDRED)
+    }
+
     /// Check if all exchanges agree on price within a tolerance (for arb validation).
     /// Returns true if all available prices are within `max_divergence_pct` of each other.
     /// Returns false if fewer than `min_sources` have data.
