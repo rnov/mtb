@@ -134,3 +134,39 @@ fn current_15min_epoch() -> i64 {
         .unwrap_or(now);
     aligned.timestamp()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Live integration test: discovers markets from real Gamma API.
+    /// Run with: cargo test -- --ignored discovery
+    #[tokio::test]
+    #[ignore]
+    async fn live_discover_markets() {
+        let config = DiscoveryConfig {
+            poll_interval_secs: 60,
+            assets: vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()],
+        };
+        let discovery = MarketDiscovery::new(config).unwrap();
+        let markets = discovery.discover().await.unwrap();
+
+        println!("discovered {} markets:", markets.len());
+        for m in &markets {
+            println!(
+                "  {} | {} | up={} | down={} | neg_risk={}",
+                m.asset, m.question, m.up_token_id, m.down_token_id, m.neg_risk
+            );
+        }
+
+        // Should find at least 1 market (markets run 24/7)
+        assert!(!markets.is_empty(), "expected at least one active market");
+
+        // Each market should have valid token IDs
+        for m in &markets {
+            assert!(!m.up_token_id.is_empty());
+            assert!(!m.down_token_id.is_empty());
+            assert_ne!(m.up_token_id, m.down_token_id);
+        }
+    }
+}

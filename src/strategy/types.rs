@@ -33,6 +33,8 @@ pub struct Opportunity {
     pub suggested_size_usdc: Decimal,
     /// Expected total profit in USDC
     pub expected_profit_usdc: Decimal,
+    pub up_token_id: String,
+    pub down_token_id: String,
     pub up_ask: Decimal,
     pub down_ask: Decimal,
     pub up_fee: Decimal,

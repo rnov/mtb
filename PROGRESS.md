@@ -1,9 +1,9 @@
 # PROGRESS.md - Project Status
 
 ## Current Phase
-**Phase 1: Foundation (Dry-Run Arb Detection)** — COMPLETE
+**Phase 2: Live Execution + Safety** — COMPLETE (all 10 steps)
 
-## Completed
+## Phase 1: Foundation (Dry-Run Arb Detection) — COMPLETE
 - [x] Rust project scaffolded (`cargo init`)
 - [x] CLAUDE.md, AGENT.md, PROGRESS.md created
 - [x] Research gathered and verified against real sources
@@ -29,6 +29,23 @@
 - [x] `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 - [x] Live dry-run verified: discovers 4 markets, streams orderbook data, runs arb detection in real-time
 
+## Phase 2: Live Execution + Safety — IN PROGRESS
+- [x] **Step 1: SDK Authentication** — `LocalSigner` from private key + `ClobClient` EIP-712 auth flow
+- [x] **Step 2: Order Building** — `Opportunity` → two FOK limit orders (UP + DOWN) with correct token_id/price/size
+- [x] **Step 3: LiveExecutor** — Full `Executor` trait impl: auth → build → sign → batch post → response handling
+- [x] **Step 4: Execution Error Handling** — 3 retries with exponential backoff (200ms/400ms/800ms), 10s timeout, partial fill detection (4-way match on UP/DOWN success), transient vs permanent error classification
+- [x] **Step 5: Feed Disconnect Halt** — `record_feed_activity()` on every orderbook update, `record_disconnect()`/`record_reconnect()` on WS events, dual check in `risk.check()`: explicit disconnect + staleness timeout (no data >5s). 3 unit tests.
+- [x] **Step 6: Adaptive Backoff** — Exponential backoff (1s/2s/4s/8s/16s/30s cap) between executions after consecutive failures. Backoff gate in `risk.check()`, resets on success. 3 unit tests.
+- [x] **Step 7: Trade Logger Enhancements** — `TradeRecord` struct with opportunity + outcome. `log_trade()` and `log_rejected()` in main loop. All trades (success/fail) and risk-rejected opportunities logged to JSON lines.
+- [x] **Step 8: Telegram Bot — Alerts** — `Notifier` struct with alert methods: trade filled/failed, execution error, disconnect/reconnect, kill switch, startup. Feature-gated behind `#[cfg(feature = "telegram")]`.
+- [x] **Step 9: Telegram Bot — Commands** — `/status`, `/kill`, `/resume`, `/help`. teloxide `Dispatcher` in background task. Only responds to authorized `chat_id`. `RiskManager` wrapped in `Arc` for sharing.
+- [x] **Step 10: Integration Testing** — 4 integration tests hitting real Polymarket APIs (no auth needed): full pipeline (discover → REST orderbook → arb detect), orderbook validation, geoblock check, batch orderbook fetch. Plus 1 discovery test from Phase 1.
+
+### Phase 2 Test Coverage
+- 24 unit tests passing (fees, arb, risk: feed disconnect, staleness, adaptive backoff, backoff scaling, backoff clear, feed activity reset, position limits, daily loss, failure tracking)
+- 5 live integration tests (`#[ignore]`): market discovery, full pipeline, REST orderbook, geoblock, batch fetch
+- `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
+
 ## Architecture Notes
 - `.deps/rs-clob-client/` is a local clone for reading source only; not used by build
 - SDK dependency is pulled from GitHub via git in `Cargo.toml`
@@ -36,11 +53,6 @@
 - Market discovery uses slug-based lookup: `GET /events/slug/{asset}-updown-15m-{epoch}`
 - Outcomes are "Up"/"Down" (not "Yes"/"No")
 - Markets are ephemeral — new slug every 15 minutes, aligned to ET
-
-## Next: Phase 2 (Live Execution + Safety)
-- [ ] `execution/executor.rs` — LiveExecutor: SDK auth, order building, submission
-- [ ] `risk/` enhancements — feed disconnect halt, adaptive backoff
-- [ ] `monitor/telegram.rs` — Telegram alerts + /status, /kill, /resume commands
 
 ## Next: Phase 3 (External Feeds + Directional Strategy)
 

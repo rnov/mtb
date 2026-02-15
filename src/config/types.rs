@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub risk: RiskConfig,
     pub discovery: DiscoveryConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub telegram: Option<TelegramConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -63,9 +65,18 @@ pub struct LoggingConfig {
     pub filter: String,
 }
 
+/// Telegram bot configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TelegramConfig {
+    /// Telegram chat ID to send alerts to
+    pub chat_id: i64,
+}
+
 /// Secrets loaded from environment variables (never serialized)
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Secrets {
     pub private_key: String,
+    /// Telegram bot token (from @BotFather)
+    pub telegram_bot_token: Option<String>,
 }

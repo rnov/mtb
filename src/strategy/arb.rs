@@ -66,6 +66,8 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
         profit_per_unit,
         suggested_size_usdc: suggested_size,
         expected_profit_usdc: expected_profit.round_dp(6),
+        up_token_id: snapshot.market.up_token_id.clone(),
+        down_token_id: snapshot.market.down_token_id.clone(),
         up_ask,
         down_ask,
         up_fee,

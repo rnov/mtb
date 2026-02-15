@@ -1,4 +1,5 @@
 pub mod dry_run;
+pub mod live;
 
 use async_trait::async_trait;
 
@@ -15,10 +16,11 @@ pub struct ExecutionResult {
 }
 
 /// Trait for executing trading opportunities.
-/// Implementations: DryRunExecutor (logs), LiveExecutor (Phase 2).
+/// Implementations: DryRunExecutor (logs), LiveExecutor (real orders).
 #[async_trait]
 pub trait Executor: Send + Sync {
     async fn execute(&self, opportunity: &Opportunity) -> Result<ExecutionResult>;
 }
 
 pub use dry_run::DryRunExecutor;
+pub use live::LiveExecutor;

@@ -21,5 +21,10 @@ pub fn load_secrets() -> Result<Secrets> {
     let private_key = std::env::var("POLYMARKET_PRIVATE_KEY")
         .map_err(|_| Error::Config("POLYMARKET_PRIVATE_KEY not set".into()))?;
 
-    Ok(Secrets { private_key })
+    let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN").ok();
+
+    Ok(Secrets {
+        private_key,
+        telegram_bot_token,
+    })
 }

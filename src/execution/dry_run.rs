@@ -2,19 +2,17 @@ use async_trait::async_trait;
 use tracing::info;
 
 use crate::error::Result;
-use crate::monitor::TradeLogger;
 use crate::strategy::Opportunity;
 
 use super::{ExecutionResult, Executor};
 
-/// Dry-run executor: logs opportunities to JSON lines without placing real orders.
-pub struct DryRunExecutor {
-    logger: TradeLogger,
-}
+/// Dry-run executor: simulates execution without placing real orders.
+#[derive(Default)]
+pub struct DryRunExecutor;
 
 impl DryRunExecutor {
-    pub fn new(logger: TradeLogger) -> Self {
-        Self { logger }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -28,12 +26,10 @@ impl Executor for DryRunExecutor {
             "[DRY RUN] would execute arb"
         );
 
-        self.logger.log_opportunity(opportunity)?;
-
         Ok(ExecutionResult {
             market_id: opportunity.market_id.clone(),
             success: true,
-            message: "dry run logged".into(),
+            message: "dry run".into(),
         })
     }
 }

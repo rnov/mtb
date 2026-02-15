@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -16,7 +17,7 @@ mod risk;
 mod strategy;
 
 use config::RunMode;
-use execution::{DryRunExecutor, Executor};
+use execution::{DryRunExecutor, Executor, LiveExecutor};
 use feed::{FeedEvent, OrderbookFeed};
 use market::MarketDiscovery;
 use monitor::TradeLogger;
@@ -27,10 +28,11 @@ use strategy::{detect_arb, MarketSnapshot};
 async fn main() -> anyhow::Result<()> {
     // Load configuration
     let app_config = config::load_config("config.toml")?;
-    let _secrets = config::load_secrets().unwrap_or_else(|e| {
+    let secrets = config::load_secrets().unwrap_or_else(|e| {
         eprintln!("Warning: {e} (ok for dry-run mode)");
         config::Secrets {
             private_key: String::new(),
+            telegram_bot_token: None,
         }
     });
 
@@ -67,22 +69,49 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Initialize trade logger
+    // Initialize trade logger (owned by main loop, not executors)
     let logger = TradeLogger::new(&app_config.logging.trade_log_path)?;
 
     // Initialize executor based on mode
     let executor: Box<dyn Executor> = match app_config.mode {
         RunMode::DryRun => {
             info!("running in DRY RUN mode — no real orders will be placed");
-            Box::new(DryRunExecutor::new(logger))
+            Box::new(DryRunExecutor::new())
         }
         RunMode::Live => {
-            anyhow::bail!("live mode not yet implemented (Phase 2)");
+            if secrets.private_key.is_empty() {
+                anyhow::bail!("live mode requires POLYMARKET_PRIVATE_KEY in .env");
+            }
+            info!("running in LIVE mode — real orders will be placed!");
+            Box::new(LiveExecutor::new(
+                app_config.clob_url.clone(),
+                app_config.chain_id,
+                secrets.private_key.clone(),
+            ))
         }
     };
 
-    // Initialize risk manager
-    let risk_manager = RiskManager::new(app_config.risk.clone());
+    // Initialize risk manager (Arc for sharing with Telegram command handler)
+    let risk_manager = Arc::new(RiskManager::new(app_config.risk.clone()));
+
+    // Initialize Telegram notifier (optional — needs bot token + chat_id)
+    #[cfg(feature = "telegram")]
+    let notifier: Option<monitor::Notifier> =
+        match (&secrets.telegram_bot_token, &app_config.telegram) {
+            (Some(token), Some(tg_config)) => {
+                Some(monitor::Notifier::new(token, tg_config.chat_id))
+            }
+            _ => {
+                info!("telegram notifications disabled (missing token or config)");
+                None
+            }
+        };
+
+    // Start Telegram command handler (background task)
+    #[cfg(feature = "telegram")]
+    if let Some(ref n) = notifier {
+        n.start_command_handler(Arc::clone(&risk_manager));
+    }
 
     // Discover markets
     let discovery = MarketDiscovery::new(app_config.discovery.clone())?;
@@ -93,6 +122,16 @@ async fn main() -> anyhow::Result<()> {
         warn!("no active markets found — will retry on next poll");
     } else {
         info!(count = markets.len(), "active markets found");
+    }
+
+    // Send startup notification
+    #[cfg(feature = "telegram")]
+    if let Some(ref n) = notifier {
+        let mode_str = match app_config.mode {
+            RunMode::DryRun => "Dry Run",
+            RunMode::Live => "LIVE",
+        };
+        n.notify_startup(mode_str, markets.len()).await;
     }
 
     // Collect all token IDs for orderbook subscription
@@ -134,6 +173,9 @@ async fn main() -> anyhow::Result<()> {
             result = rx.recv() => {
                 match result {
                     Ok(FeedEvent::OrderbookUpdate(update)) => {
+                        // Record feed activity for staleness tracking
+                        risk_manager.record_feed_activity();
+
                         // Update latest prices
                         if let Some(bid) = update.best_bid {
                             best_bids.insert(update.token_id.clone(), bid);
@@ -163,31 +205,69 @@ async fn main() -> anyhow::Result<()> {
                                     Ok(()) => {
                                         match executor.execute(&opportunity).await {
                                             Ok(result) => {
+                                                // Log trade with full execution details
+                                                if let Err(e) = logger.log_trade(&opportunity, &result) {
+                                                    error!(error = %e, "failed to write trade log");
+                                                }
+                                                // Telegram alert for trades
+                                                #[cfg(feature = "telegram")]
+                                                if let Some(ref n) = notifier {
+                                                    n.notify_trade(&opportunity, &result).await;
+                                                }
                                                 if result.success {
                                                     risk_manager.record_execution(opportunity.suggested_size_usdc);
                                                     risk_manager.reset_failures();
                                                 } else {
                                                     risk_manager.record_failure();
+                                                    #[cfg(feature = "telegram")]
+                                                    if risk_manager.is_killed() {
+                                                        if let Some(ref n) = notifier {
+                                                            n.notify_kill_switch("consecutive failures threshold").await;
+                                                        }
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
                                                 error!(error = %e, "execution failed");
+                                                #[cfg(feature = "telegram")]
+                                                if let Some(ref n) = notifier {
+                                                    n.notify_execution_error(&opportunity.asset, &e.to_string()).await;
+                                                }
                                                 risk_manager.record_failure();
+                                                #[cfg(feature = "telegram")]
+                                                if risk_manager.is_killed() {
+                                                    if let Some(ref n) = notifier {
+                                                        n.notify_kill_switch("consecutive failures threshold").await;
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        warn!(error = %e, "risk check rejected opportunity");
+                                        let reason = e.to_string();
+                                        warn!(error = %reason, "risk check rejected opportunity");
+                                        // Log rejected opportunities too (for analysis)
+                                        if let Err(le) = logger.log_rejected(&opportunity, &reason) {
+                                            error!(error = %le, "failed to write rejection log");
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                     Ok(FeedEvent::Disconnected { source }) => {
-                        warn!(source = %source, "feed disconnected");
+                        risk_manager.record_disconnect(&source);
+                        #[cfg(feature = "telegram")]
+                        if let Some(ref n) = notifier {
+                            n.notify_disconnect(&source).await;
+                        }
                     }
                     Ok(FeedEvent::Reconnected { source }) => {
-                        info!(source = %source, "feed reconnected");
+                        risk_manager.record_reconnect(&source);
+                        #[cfg(feature = "telegram")]
+                        if let Some(ref n) = notifier {
+                            n.notify_reconnect(&source).await;
+                        }
                     }
                     Ok(_) => {} // CryptoPrice events (Phase 3)
                     Err(broadcast::error::RecvError::Lagged(n)) => {
