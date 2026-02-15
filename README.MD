@@ -1,185 +1,245 @@
-## MTB Alpha
+# MTB Alpha
 
+Polymarket trading bot targeting 15-minute crypto up/down markets (BTC, ETH, SOL, XRP).
 
-### Plan to implement                                                                                                                                              
-                                                                                                                                                               
-Architecture Plan: mtb — Polymarket 15-Minute Crypto Arb Trading Bot                                                                                           
-                                                                                                                                                               
-All code, config, and artifacts live in /Users/rsm/rdev/mtb.                                                                                                   
-                                                                                                                                                               
-Context                                                                                                                                                        
-                                                                                                                                                               
-We're building a Polymarket trading bot targeting 15-minute crypto up/down markets (BTC/ETH/SOL). The bot detects arb opportunities when YES_ask + NO_ask <    
-1.0 after fees, and optionally trades directionally using external price signals. Built on top of the official Polymarket/rs-clob-client SDK (v0.4.2).         
-                                                                                                                                                               
-Module Layout                                                                                                                                                  
-                                                                                                                                                               
-src/                                                                                                                                                           
-  main.rs -- Entry point: load config, wire modules, run event loop                                                                           
-  lib.rs -- Re-exports for testing                                                                                                           
-                                                                                                                                                               
-  config/                                                                                                                                                      
-    mod.rs                 -- Config loading (.env + config.toml)                                                                                              
-    types.rs               -- AppConfig, RunMode, StrategyConfig, RiskConfig                                                                                   
-                                                                                                                                                               
-  market/                                                                                                                                                      
-    mod.rs -- Market discovery and lifecycle                                                                                                   
-    discovery.rs -- Gamma API: find active 15-min crypto markets                                                                                     
-    types.rs -- MarketPair (yes/no token IDs, asset, expiry)                                                                                     
-                                                                                                                                                               
-  feed/                                                                                                                                                        
-    mod.rs -- Unified feed manager (spawns + multiplexes WS sources)                                                                           
-    orderbook.rs -- CLOB WebSocket: BestBidAsk per token                                                                                             
-    crypto_price.rs -- RTDS: Binance BTC/ETH/SOL prices                                                                                                 
-    types.rs -- FeedEvent enum                                                                                                                   
-                                                                                                                                                               
-  strategy/                                                                                                                                                    
-    mod.rs -- Strategy dispatcher                                                                                                              
-    arb.rs -- Pure arb: YES_ask + NO_ask < 1.0 after fees                                                                                      
-    directional.rs -- Directional: external price signal + mispricing                                                                                  
-    fees.rs -- Precise dynamic taker fee model                                                                                                  
-    types.rs -- MarketSnapshot, Opportunity, OrderIntent                                                                                         
-                                                                                                                                                               
-  execution/                                                                                                                                                   
-    mod.rs -- Executor trait                                                                                                                   
-    executor.rs -- LiveExecutor: SDK order building + submission                                                                                    
-    dry_run.rs -- DryRunExecutor: logs what it would do to JSON lines                                                                              
-                                                                                                                                                               
-  risk/                                                                                                                                                        
-    mod.rs -- RiskManager: gates every execution                                                                                               
-    limits.rs -- Position limits, exposure caps, drawdown tracking                                                                                
-    kill_switch.rs -- Global halt (loss-based, feed disconnect, manual /kill)                                                                          
-                                                                                                                                                               
-  monitor/                                                                                                                                                     
-    mod.rs -- Monitoring hub                                                                                                                   
-    telegram.rs -- Telegram alerts + commands (/status, /kill, /resume)                                                                             
-    metrics.rs -- Prometheus counters/gauges (optional feature)                                                                                    
-    logger.rs -- Append-only JSON lines trade log                                                                                                 
-                                                                                                                                                               
-  error.rs -- Unified error types (thiserror)                                                                                                  
-                                                                                                                                                               
-Project root files:                                                                                                                                            
-config.toml                -- Runtime configuration (committed, sane defaults)                                                                                 
-.env                       -- Secrets (never committed, in .gitignore)                                                                                         
-                                                                                                                                                               
-Data Flow                                                                                                                                                      
-                                                                                                                                                               
-Gamma (HTTP 60s poll) → Market Registry (active MarketPairs)                                                                                                   
-                                                                                                                                                             
-              ┌───────────────┼───────────────┐                                                                                                                
-              ▼                               ▼                                                                                                                
-     CLOB WebSocket                    RTDS WebSocket                                                                                                          
-     (orderbook data)                  (Binance prices)                                                                                                        
-                                                                                                                                                           
-              └───────────┬───────────────────┘                                                                                                                
-                          ▼                                                                                                                                    
-                  broadcast channel                                                                                                                            
-                          ▼                                                                                                                                    
-                  Main Event Loop (tokio::select!)                                                                                                             
-                          ▼                                                                                                                                    
-                  Strategy Engine (pure computation)                                                                                                           
-                  - build MarketSnapshot                                                                                                                       
-                  - detect arb / directional signal                                                                                                            
-                  - calculate fees precisely                                                                                                                   
-                          ▼                                                                                                                                    
-                  Risk Manager (sync gate)                                                                                                                     
-                  - position limit check                                                                                                                       
-                  - drawdown check                                                                                                                             
-                  - kill switch check                                                                                                                          
-                  - feed connected check                                                                                                                       
-                          ▼                                                                                                                                    
-                  Executor (trait-based)                                                                                                                       
-                  - Live: SDK order placement                                                                                                                  
-                  - DryRun: log to JSON lines                                                                                                                  
-                          ▼                                                                                                                                    
-                  Monitor                                                                                                                                      
-                  - Telegram alert                                                                                                                             
-                  - Prometheus metric                                                                                                                          
-                  - JSON log line                                                                                                                              
-                                                                                                                                                               
-Key Design Decisions                                                                                                                                           
-                                                                                                                                                               
-1. Executor trait — LiveExecutor and DryRunExecutor implement the same Executor trait. Switched via config.toml mode = "dry_run" | "live".                     
-2. Strategy is pure — No IO, no async. Takes MarketSnapshot, returns Option<Opportunity>. Fully unit-testable.                                                 
-3. Risk manager is synchronous — In-memory state behind RwLock. Hot path (read lock) never blocks on IO.                                                       
-4. Kill switch auto-triggers on: drawdown threshold, daily loss limit, feed disconnect >5s, N consecutive failed orders. Resumable only via Telegram /resume.  
-5. Fee model — Polymarket dynamic taker fees vary by price. Must be precise — wrong fees = false signals. Validated with unit tests against known values.      
-                                                                                                                                                               
-Cargo.toml Dependencies                                                                                                                                        
-                                                                                                                                                               
-[dependencies]                                                                                                                                                 
-polymarket-client-sdk = { git = "https://github.com/Polymarket/rs-clob-client", features = ["clob", "ws", "rtds", "gamma", "data", "heartbeats"] }             
-tokio = { version = "1", features = ["full"] }                                                                                                                 
-serde = { version = "1", features = ["derive"] }                                                                                                               
-serde_json = "1"                                                                                                                                               
-toml = "0.8"                                                                                                                                                   
-dotenvy = "0.15"                                                                                                                                               
-thiserror = "2"                                                                                                                                                
-anyhow = "1"                                                                                                                                                   
-rust_decimal = "1.40"                                                                                                                                          
-tracing = "0.1"                                                                                                                                                
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }                                                                                    
-chrono = { version = "0.4", features = ["serde"] }                                                                                                             
-alloy = { version = "1.6", features = ["signers", "signer-local"] }                                                                                            
-teloxide = { version = "0.13", features = ["macros"], optional = true }                                                                                        
-prometheus = { version = "0.13", optional = true }                                                                                                             
-axum = { version = "0.8", optional = true }                                                                                                                    
-                                                                                                                                                               
-[features]                                                                                                                                                     
-default = ["telegram"]                                                                                                                                         
-telegram = ["dep:teloxide"]                                                                                                                                    
-metrics = ["dep:prometheus", "dep:axum"]                                                                                                                       
-                                                                                                                                                               
-Build Phases                                                                                                                                                   
-                                                                                                                                                               
-Phase 1: Foundation (dry-run arb detection)                                                                                                                    
-                                                                                                                                                               
-1. config/ — load .env + config.toml, validate                                                                                                                 
-2. error.rs — unified error type                                                                                                                               
-3. market/discovery.rs — Gamma client, find active 15-min markets                                                                                              
-4. feed/orderbook.rs — CLOB WS subscription for BestBidAsk                                                                                                     
-5. strategy/fees.rs — fee model with unit tests                                                                                                                
-6. strategy/arb.rs — pure arb detection                                                                                                                        
-7. execution/dry_run.rs — log opportunities to JSON lines                                                                                                      
-8. Wire in main.rs — end-to-end dry-run                                                                                                                        
-                                                                                                                                                               
-Deliverable: Running binary that connects to real Polymarket WS, discovers markets, logs every arb opportunity. Zero capital risk.
+Detects arbitrage when `up_ask + down_ask < 1.0` after fees, and (in progress) trades directionally using external price signals from Binance. Built in Rust on top of the official [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) SDK.
 
-Phase 2: Live execution + safety                                                                                                                               
-                                                                                                                                                               
-1. execution/executor.rs — SDK auth, order building, submission                                                                                                
-2. risk/ — position limits, drawdown kill switch, feed disconnect halt                                                                                         
-3. monitor/logger.rs — structured trade log                                                                                                                    
-4. monitor/telegram.rs — alerts + commands                                                                                                                     
-                                                                                                                                                               
-Deliverable: Bot places real orders with safety rails. Telegram alerts on every trade.                                                                         
-                                                                                                                                                               
-Phase 3: Enhancement                                                                                                                                           
-                                                                                                                                                               
-1. feed/crypto_price.rs — RTDS Binance price feed                                                                                                              
-2. strategy/directional.rs — directional signal logic                                                                                                          
-3. monitor/metrics.rs — Prometheus endpoint                                                                                                                    
-4. Performance profiling and optimization                                                                                                                      
-5. Deployment: Dockerfile, VPS setup                                                                                                                           
-                                                                                                                                                               
-Phase 4: Hardening                                                                                                                                             
-                                                                                                                                                               
-1. Backtesting with recorded dry-run data                                                                                                                      
-2. Rate limit tracking and adaptive backoff                                                                                                                    
-3. Testnet deployment on Amoy (chain_id 80002)                                                                                                                 
-                                                                                                                                                               
-Testing Strategy                                                                                                                                               
-                                                                                                                                                               
-- strategy/ and risk/ — >90% unit test coverage. Pure logic, no excuses.                                                                                       
-- fees.rs — Every test validated against real Polymarket fee values.                                                                                           
-- Integration tests (behind #[ignore]) — real Gamma API discovery, real CLOB WS connection, full dry-run pipeline.                                             
-- Executor trait — allows mock executor for testing main event loop without network.                                                                           
-                                                                                                                                                               
-Verification                                                                                                                                                   
-                                                                                                                                                               
-After Phase 1:                                                                                                                                                 
-1. cargo build — compiles cleanly                                                                                                                              
-2. cargo clippy — no warnings                                                                                                                                  
-3. cargo test — all unit tests pass (fee model, arb detection, risk checks)                                                                                    
-4. cargo run with mode = "dry_run" — connects to WS, discovers markets, logs opportunities to stdout and JSON file                                             
-5. Inspect dry-run JSON log — verify opportunity records have correct fee calculations
+## Status
+
+| Phase | Status |
+|-------|--------|
+| Phase 1: Dry-run arb detection | Complete |
+| Phase 2: Live execution + safety | Complete |
+| Phase 3: External feeds + directional | In progress |
+
+See [PROGRESS.md](PROGRESS.md) for detailed step-by-step status.
+
+## Quick Start
+
+### Prerequisites
+
+- Rust >= 1.88 (`rustup update stable`)
+- A `.env` file with secrets (see below)
+- `config.toml` is committed with sane defaults
+
+### Setup
+
+```bash
+# Clone and build
+cargo build
+
+# Create .env with your secrets
+cat > .env << 'EOF'
+POLYMARKET_PRIVATE_KEY=your_64_char_hex_key_no_0x_prefix
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+EOF
+```
+
+### Run
+
+```bash
+# Dry-run mode (default) -- watches markets, detects arbs, no real orders
+cargo run
+
+# With debug logging (see Binance prices, orderbook updates, latency)
+RUST_LOG=mtb=debug cargo run
+```
+
+To switch to live trading, change `mode = "live"` in `config.toml`. Requires funded Polymarket account with USDC allowances set.
+
+## Configuration
+
+**`config.toml`** -- runtime settings (committed):
+
+| Section | Key fields |
+|---------|-----------|
+| `mode` | `"dry_run"` or `"live"` |
+| `[strategy]` | `min_arb_profit`, `assets`, `max_order_size_usdc` |
+| `[risk]` | `max_exposure_usdc`, `max_daily_loss_usdc`, `max_consecutive_failures`, `feed_disconnect_timeout_secs` |
+| `[discovery]` | `poll_interval_secs`, `assets` |
+| `[telegram]` | `chat_id` |
+
+**`.env`** -- secrets (never committed):
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `POLYMARKET_PRIVATE_KEY` | Live mode | MetaMask private key (64 hex chars, no `0x` prefix) |
+| `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token from BotFather |
+
+## Telegram Bot
+
+Commands (only responds to authorized `chat_id`):
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Current risk state, exposure, feed health |
+| `/kill` | Manually trigger kill switch (stop trading) |
+| `/resume` | Reset kill switch (resume trading) |
+| `/help` | List commands |
+
+Automatic alerts: trade filled/failed, execution errors, feed disconnect/reconnect, kill switch triggered, startup notification.
+
+## Architecture
+
+```
+Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
+                               |
+               +---------------+---------------+
+               v                               v
+      CLOB WebSocket                   Binance WebSocket
+      (orderbook data)                 (direct bookTicker)
+               |                               |
+               +-----------+-------------------+
+                           v
+                   broadcast channel
+                           v
+                   Main Event Loop (tokio::select!)
+                           v
+                   Strategy Engine (pure, no IO)
+                   - build MarketSnapshot
+                   - detect arb / directional signal
+                   - calculate fees precisely
+                           v
+                   Risk Manager (sync, RwLock)
+                   - position limit check
+                   - exposure cap check
+                   - kill switch check
+                   - feed staleness check
+                   - adaptive backoff check
+                           v
+                   Executor (trait-based)
+                   - Live: SDK order placement (FOK)
+                   - DryRun: log to JSON lines
+                           v
+                   Monitor
+                   - Telegram alert
+                   - JSON log line
+```
+
+## Module Layout
+
+```
+src/
+  main.rs                 Entry point, event loop
+  lib.rs                  Re-exports for tests
+  error.rs                Unified error types (thiserror)
+
+  config/
+    mod.rs                Config loading (.env + config.toml)
+    types.rs              AppConfig, RunMode, StrategyConfig, RiskConfig, Secrets
+
+  market/
+    mod.rs                Re-exports
+    discovery.rs          Gamma API: slug-based 15-min market discovery
+    types.rs              MarketPair (up/down token IDs, asset, expiry)
+
+  feed/
+    mod.rs                Feed manager (multiplexes WS sources)
+    orderbook.rs          CLOB WebSocket: BestBidAsk per token
+    crypto_price.rs       Direct Binance WebSocket: bookTicker stream
+    types.rs              FeedEvent enum (OrderbookUpdate, CryptoPrice, Disconnected, Reconnected)
+
+  strategy/
+    mod.rs                Re-exports
+    arb.rs                Pure arb: up_ask + down_ask < 1.0 after fees
+    fees.rs               Polymarket dynamic taker fee model (2% rate)
+    types.rs              MarketSnapshot, Opportunity, OpportunityKind
+
+  execution/
+    mod.rs                Executor trait + ExecutionResult
+    live.rs               LiveExecutor: auth, build, sign, batch post (GnosisSafe)
+    dry_run.rs            DryRunExecutor: logs to JSON lines
+
+  risk/
+    mod.rs                RiskManager: gates every execution
+    limits.rs             Position limits, exposure caps, daily loss, failure tracking
+    kill_switch.rs        Global halt (auto + manual)
+
+  monitor/
+    mod.rs                Re-exports
+    telegram.rs           Notifier (alerts) + command handler (/status, /kill, /resume)
+    logger.rs             Append-only JSON lines trade log
+```
+
+## Testing
+
+### Unit Tests (27)
+
+Fast, no network. Run anytime:
+
+```bash
+cargo test
+```
+
+Covers: fee model (11 tests), arb detection (5), risk manager (7), Binance feed parsing (3), position limits (3).
+
+### Integration Tests (10)
+
+Hit real APIs. Marked `#[ignore]`, require network access:
+
+```bash
+# Run all integration tests
+cargo test -- --ignored --nocapture
+```
+
+Or run specific tests:
+
+```bash
+# Unauthenticated (no .env needed)
+cargo test pipeline_discover_fetch_detect -- --ignored --nocapture
+cargo test rest_orderbook_returns_valid_data -- --ignored --nocapture
+cargo test geoblock_check -- --ignored --nocapture
+cargo test batch_orderbook_fetch -- --ignored --nocapture
+cargo test binance_ws_receives_prices -- --ignored --nocapture
+
+# Authenticated (requires POLYMARKET_PRIVATE_KEY in .env)
+cargo test auth_clob_authenticate -- --ignored --nocapture
+cargo test auth_check_balance_allowance -- --ignored --nocapture
+cargo test auth_build_and_sign_order -- --ignored --nocapture
+cargo test live_post_unfillable_fok_order -- --ignored --nocapture
+
+# Latency diagnostic (run locally and on VPS to compare)
+cargo test binance_network_latency -- --ignored --nocapture
+```
+
+| Test | Auth | What it does |
+|------|------|-------------|
+| `pipeline_discover_fetch_detect` | No | Full pipeline: discover markets, fetch orderbook, run arb detection |
+| `rest_orderbook_returns_valid_data` | No | Validate orderbook structure and price ranges |
+| `geoblock_check` | No | Verify IP is not geo-blocked |
+| `batch_orderbook_fetch` | No | Multi-market batch orderbook fetch |
+| `binance_ws_receives_prices` | No | Direct Binance WS connection, verify price stream |
+| `binance_network_latency` | No | Measure real network latency to Binance (50 samples, min/avg/p50/p95/p99/max) |
+| `auth_clob_authenticate` | Yes | EIP-712 auth with GnosisSafe signature type |
+| `auth_check_balance_allowance` | Yes | Check USDC balance and allowances on proxy wallet |
+| `auth_build_and_sign_order` | Yes | Build and sign a FOK order (no submission) |
+| `live_post_unfillable_fok_order` | Yes | Post FOK at $0.01 (immediately killed, $0 cost) |
+
+### Lint and Format
+
+```bash
+cargo clippy    # Zero warnings policy
+cargo fmt       # Standard rustfmt
+```
+
+## Wallet Setup
+
+Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SDK auto-derives a proxy wallet address via CREATE2 from the EOA signer.
+
+- Funds deposited through Polymarket UI go to the proxy wallet
+- CLOB authenticates with EOA private key, trades execute from proxy
+- GnosisSafe trades are gasless (Polymarket relays)
+- USDC allowances must be set (triggered by first manual trade on Polymarket UI)
+
+## Key Design Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Language | Rust | Performance, safety, reliability |
+| Async runtime | tokio | Industry standard |
+| SDK | rs-clob-client (official) | Only trusted Polymarket Rust client |
+| Price feed | Direct Binance WS | Lowest latency (not via Polymarket RTDS relay) |
+| Wallet type | GnosisSafe (Type 2) | Gasless, MetaMask compatible |
+| Fee model | 2% dynamic taker | Symmetric around 0.5, unit-tested |
+| Order type | FOK (fill-or-kill) | No partial fills, no open orders to manage |
+| Market discovery | Slug-based | Ephemeral 15-min markets not in Gamma pagination |
