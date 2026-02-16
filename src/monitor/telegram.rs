@@ -129,21 +129,28 @@ impl Notifier {
     /// Notify: trade executed (success or failure).
     pub async fn notify_trade(&self, opportunity: &Opportunity, result: &ExecutionResult) {
         let icon = if result.success { "✅" } else { "⚠️" };
+        let total_fee = opportunity.up_fee + opportunity.down_fee;
         let msg = format!(
             "{icon} *Trade {status}*\n\
              Asset: {asset}\n\
+             Buy Up: {up_ask} (fee {up_fee})\n\
+             Buy Down: {down_ask} (fee {down_fee})\n\
+             Combined: {combined} → {after_fees} (fees {total_fee})\n\
              Profit/unit: {profit}\n\
-             Size: ${size} USDC\n\
-             Expected P&L: ${pnl}\n\
-             Up: {up_ask} | Down: {down_ask}\n\
-             Result: {message}",
+             Size: {size} USDC | P&L: {pnl} USDC\n\
+             {message}",
             status = if result.success { "Filled" } else { "Failed" },
             asset = opportunity.asset,
+            up_ask = opportunity.up_ask,
+            up_fee = opportunity.up_fee,
+            down_ask = opportunity.down_ask,
+            down_fee = opportunity.down_fee,
+            combined = opportunity.combined_ask,
+            after_fees = opportunity.combined_ask_after_fees,
+            total_fee = total_fee,
             profit = opportunity.profit_per_unit,
             size = opportunity.suggested_size_usdc,
             pnl = opportunity.expected_profit_usdc,
-            up_ask = opportunity.up_ask,
-            down_ask = opportunity.down_ask,
             message = result.message,
         );
         self.send(&msg).await;

@@ -43,6 +43,11 @@ cargo run
 
 # With debug logging (see Binance prices, orderbook updates, latency)
 RUST_LOG=mtb=debug cargo run
+
+# Timed dry-run test (default 3 minutes, logs to logs/trades.jsonl)
+./scripts/dry-run-test.sh        # 3 minutes
+./scripts/dry-run-test.sh 1      # 1 minute
+./scripts/dry-run-test.sh 10     # 10 minutes
 ```
 
 To switch to live trading, change `mode = "live"` in `config.toml`. Requires funded Polymarket account with USDC allowances set.

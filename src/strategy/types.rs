@@ -25,9 +25,15 @@ pub struct Opportunity {
     pub kind: OpportunityKind,
     /// Raw combined ask price (up_ask + down_ask) before fees
     pub combined_ask: Decimal,
+    /// Individual leg prices
+    pub up_ask: Decimal,
+    pub down_ask: Decimal,
+    /// Per-leg fees
+    pub up_fee: Decimal,
+    pub down_fee: Decimal,
     /// Combined ask price after fees
     pub combined_ask_after_fees: Decimal,
-    /// Expected profit per unit
+    /// Expected profit per unit ($1.00 payout - combined_ask_after_fees)
     pub profit_per_unit: Decimal,
     /// Suggested order size in USDC
     pub suggested_size_usdc: Decimal,
@@ -35,10 +41,6 @@ pub struct Opportunity {
     pub expected_profit_usdc: Decimal,
     pub up_token_id: String,
     pub down_token_id: String,
-    pub up_ask: Decimal,
-    pub down_ask: Decimal,
-    pub up_fee: Decimal,
-    pub down_fee: Decimal,
     pub timestamp: DateTime<Utc>,
 }
 

@@ -1,7 +1,7 @@
 # PROGRESS.md - Project Status
 
 ## Current Phase
-**Phase 2: Live Execution + Safety** — COMPLETE (all 10 steps)
+**Phase 3: External Feeds + Arb Validation** — IN PROGRESS (Step 7b complete, Steps 8-9 remaining)
 
 ## Phase 1: Foundation (Dry-Run Arb Detection) — COMPLETE
 - [x] Rust project scaffolded (`cargo init`)
@@ -72,6 +72,7 @@
 - [x] **Step 6: Bybit Direct WS Feed** — Direct WebSocket to `wss://stream.bybit.com/v5/public/spot` for spot tickers. Uses `lastPrice` (spot tickers are snapshot+delta, update on price change only). Added as `"bybit"` source in `PriceState` (5 sources per asset now). Latency test via `publicTrade` stream `T` field (clock offset ~-11ms, similar to Coinbase). Gap avg ~762ms (quiet periods), faster during volatility. 2 unit tests + 2 integration tests.
 - [x] **Step 6b: Tiered Source Architecture** — Separated price sources into two tiers: **Exchange tier** (Binance, Coinbase, OKX, Bybit — fast, ~20-120ms) used for freshness guard validation, and **Resolution tier** (Chainlink RTDS — ~1-1.5s) used separately for resolution confidence. Freshness guard now uses exchange-only methods (`count_fresh_exchange_sources`, `exchange_staleness`, `exchanges_agree`) so Chainlink's relay latency doesn't cause false divergence rejections or weaken validation by counting as a "fresh source." 4 new PriceState unit tests for exchange-only tier behavior.
 - [x] **Step 7: Dry-Run Validation Logging** — Enriched `TradeRecord` with full pipeline context for data collection. Every detected arb now logs: `PipelineStage` (freshness_rejected, risk_rejected, executed, execution_failed), `ExchangeSnapshot` (each exchange's price + age at decision time, fresh count, divergence, Chainlink price/age), and timing breakdown (arb_us, fresh_us, risk_us, exec_ms, total_us). `PriceState::snapshot_asset()` captures exchange context at arb detection time. Run in `dry_run` mode to collect data for threshold tuning without placing orders. 5 new unit tests (2 snapshot, 3 logger serialization). 59 unit + 17 integration tests total.
+- [x] **Step 7b: Orderbook Fix + Dry-Run Verified** — Fixed critical orderbook parsing bug: CLOB WS sorts bids ascending and asks descending, so `.first()` returned worst prices ($0.01/$0.99) instead of best. Changed to `.last()` — one-line fix per side. The WS book is already complement-merged (includes both native and CTF-derived orders). Added complement safety net in main.rs (`min(native_ask, 1 - complement_bid)`). Fixed discovery to map token IDs to outcomes via `market.outcomes` array. Reordered `Opportunity` fields for readability (up_ask/down_ask right after combined_ask). Enriched Telegram trade alerts with full breakdown (buy up/down, fees, combined before/after). Added `scripts/dry-run-test.sh` for timed dry-run testing. **Live dry-run verified: 25 arbs detected in 3 minutes across BTC/ETH/XRP, tick-to-trade ~115μs, all 4 exchanges fresh.**
 - [ ] Step 8: EOA implementation
 - [ ] Step 9: Deployment prep + production
 

@@ -234,15 +234,50 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(&(market_idx, _is_up)) = token_to_market.get(&update.token_id) {
                             let m = &markets[market_idx];
 
-                            // Build snapshot
+                            // Raw per-token book values
+                            let raw_up_bid = best_bids.get(&m.up_token_id).copied();
+                            let raw_up_ask = best_asks.get(&m.up_token_id).copied();
+                            let raw_down_bid = best_bids.get(&m.down_token_id).copied();
+                            let raw_down_ask = best_asks.get(&m.down_token_id).copied();
+
+                            // The CLOB WS book is already complement-merged: it
+                            // includes both native orders and complement-derived
+                            // orders (via CTF split/merge). Best bid/ask from the
+                            // book are the effective prices.
+                            //
+                            // Safety net: also check 1-complement_bid in case the
+                            // book has a tighter implied price.
+                            let effective_up_ask = match (raw_up_ask, raw_down_bid) {
+                                (Some(ask), Some(bid)) => Some(ask.min(Decimal::ONE - bid)),
+                                (Some(ask), None) => Some(ask),
+                                (None, Some(bid)) => Some(Decimal::ONE - bid),
+                                (None, None) => None,
+                            };
+                            let effective_down_ask = match (raw_down_ask, raw_up_bid) {
+                                (Some(ask), Some(bid)) => Some(ask.min(Decimal::ONE - bid)),
+                                (Some(ask), None) => Some(ask),
+                                (None, Some(bid)) => Some(Decimal::ONE - bid),
+                                (None, None) => None,
+                            };
+
                             let snapshot = MarketSnapshot {
                                 market: m.clone(),
-                                up_best_bid: best_bids.get(&m.up_token_id).copied(),
-                                up_best_ask: best_asks.get(&m.up_token_id).copied(),
-                                down_best_bid: best_bids.get(&m.down_token_id).copied(),
-                                down_best_ask: best_asks.get(&m.down_token_id).copied(),
+                                up_best_bid: raw_up_bid,
+                                up_best_ask: effective_up_ask,
+                                down_best_bid: raw_down_bid,
+                                down_best_ask: effective_down_ask,
                                 timestamp: Utc::now(),
                             };
+
+                            debug!(
+                                market_id = %m.market_id,
+                                asset = %m.asset,
+                                up_ask = ?effective_up_ask,
+                                down_ask = ?effective_down_ask,
+                                up_bid = ?raw_up_bid,
+                                down_bid = ?raw_down_bid,
+                                "market snapshot"
+                            );
 
                             // Run arb detection (pure computation — should be <1μs)
                             let arb_start = std::time::Instant::now();

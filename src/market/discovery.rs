@@ -105,13 +105,43 @@ impl MarketDiscovery {
                 }
             };
 
+            let outcomes = match &market.outcomes {
+                Some(o) if o.len() == 2 => o,
+                _ => {
+                    warn!(slug = %slug, "expected 2 outcomes");
+                    continue;
+                }
+            };
+
+            // Match token IDs to Up/Down by outcome name — never assume array order
+            let (up_token_id, down_token_id) = if outcomes[0] == "Up" && outcomes[1] == "Down" {
+                (token_ids[0].to_string(), token_ids[1].to_string())
+            } else if outcomes[0] == "Down" && outcomes[1] == "Up" {
+                (token_ids[1].to_string(), token_ids[0].to_string())
+            } else {
+                warn!(
+                    slug = %slug,
+                    outcomes = ?outcomes,
+                    "unexpected outcome names (expected Up/Down)"
+                );
+                continue;
+            };
+
+            info!(
+                slug = %slug,
+                outcomes = ?outcomes,
+                up_token = %up_token_id,
+                down_token = %down_token_id,
+                "token-to-outcome mapping"
+            );
+
             return Ok(Some(MarketPair {
                 market_id: market.id.clone(),
                 question: market.question.clone().unwrap_or_default(),
                 asset: asset.to_string(),
                 slug: slug.to_string(),
-                up_token_id: token_ids[0].to_string(),
-                down_token_id: token_ids[1].to_string(),
+                up_token_id,
+                down_token_id,
                 end_date: event.end_date,
                 liquidity: market.liquidity,
                 neg_risk: market.neg_risk.unwrap_or(false),
@@ -154,8 +184,13 @@ mod tests {
         println!("discovered {} markets:", markets.len());
         for m in &markets {
             println!(
-                "  {} | {} | up={} | down={} | neg_risk={}",
-                m.asset, m.question, m.up_token_id, m.down_token_id, m.neg_risk
+                "  {} | {} | up={} | down={} | neg_risk={}\n    question: {}",
+                m.asset,
+                m.market_id,
+                &m.up_token_id[..20],
+                &m.down_token_id[..20],
+                m.neg_risk,
+                m.question
             );
         }
 

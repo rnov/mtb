@@ -65,10 +65,12 @@ async fn run_orderbook_stream(
             Ok(book) => {
                 let asset_id_str = book.asset_id.to_string();
 
-                // Extract best bid (highest price in bids)
-                let best_bid = book.bids.first().map(|level| level.price);
-                // Extract best ask (lowest price in asks)
-                let best_ask = book.asks.first().map(|level| level.price);
+                // Extract best bid (highest price in bids).
+                // The CLOB WS sorts bids ascending (lowest first), so best bid is last.
+                let best_bid = book.bids.last().map(|level| level.price);
+                // Extract best ask (lowest price in asks).
+                // The CLOB WS sorts asks descending (highest first), so best ask is last.
+                let best_ask = book.asks.last().map(|level| level.price);
 
                 let update = BestBidAsk {
                     token_id: asset_id_str.clone(),
