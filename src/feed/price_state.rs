@@ -46,6 +46,7 @@ impl PriceState {
                     ("binance".into(), format!("{}usdt", asset.to_lowercase())),
                     ("coinbase".into(), format!("{}-USD", asset.to_uppercase())),
                     ("okx".into(), format!("{}-USDT", asset.to_uppercase())),
+                    ("bybit".into(), format!("{}USDT", asset.to_uppercase())),
                     ("chainlink".into(), format!("{}/usd", asset.to_lowercase())),
                 ],
             );

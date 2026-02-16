@@ -2,7 +2,7 @@
 
 Polymarket trading bot targeting 15-minute crypto up/down markets (BTC, ETH, SOL, XRP).
 
-Detects arbitrage when `up_ask + down_ask < 1.0` after fees, cross-validated against real-time prices from Binance, Coinbase, and OKX to reject phantom arbs. Built in Rust on top of the official [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) SDK.
+Detects arbitrage when `up_ask + down_ask < 1.0` after fees, cross-validated against real-time prices from Binance, Coinbase, OKX, and Bybit to reject phantom arbs. Built in Rust on top of the official [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) SDK.
 
 ## Status
 
@@ -91,8 +91,8 @@ Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
            |                   |                   |
            |           +-------+-------+           |
            |           v       v       v           |
-           |       Binance  Coinbase  OKX          |
-           |       bookTicker ticker  tickers      |
+           |       Binance Coinbase OKX Bybit       |
+           |       bookTkr ticker  tickers tickers |
            |           |       |       |           |
            |           +---+---+---+---+           |
            |               v                       |
@@ -155,6 +155,7 @@ src/
     crypto_price.rs       Binance direct WS: combined bookTicker stream
     coinbase.rs           Coinbase direct WS: Advanced Trade ticker
     okx.rs                OKX direct WS: public tickers channel
+    bybit.rs              Bybit direct WS: V5 spot tickers (lastPrice)
     chainlink.rs          Chainlink Data Streams via RTDS (resolution source)
     price_state.rs        Multi-exchange price state + cross-validation
     types.rs              FeedEvent enum (OrderbookUpdate, CryptoPrice, ChainlinkPrice, Disconnected, Reconnected)
@@ -184,7 +185,7 @@ src/
 
 ## Testing
 
-### Unit Tests (48)
+### Unit Tests (50)
 
 Fast, no network. Run anytime:
 
@@ -192,9 +193,9 @@ Fast, no network. Run anytime:
 cargo test
 ```
 
-Covers: fee model (11), arb detection (5), freshness guard (8), risk manager (7), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (7), position limits (3).
+Covers: fee model (11), arb detection (5), freshness guard (8), risk manager (7), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Bybit feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (7), position limits (3).
 
-### Integration Tests (15)
+### Integration Tests (17)
 
 Hit real APIs. Marked `#[ignore]`, require network access:
 
@@ -210,11 +211,13 @@ Or run specific tests:
 cargo test binance_ws_receives_prices -- --ignored --nocapture
 cargo test coinbase_ws_receives_prices -- --ignored --nocapture
 cargo test okx_ws_receives_prices -- --ignored --nocapture
+cargo test bybit_ws_receives_prices -- --ignored --nocapture
 
 # Network latency diagnostics (run locally and on VPS to compare)
 cargo test binance_network_latency -- --ignored --nocapture
 cargo test coinbase_network_latency -- --ignored --nocapture
 cargo test okx_network_latency -- --ignored --nocapture
+cargo test bybit_network_latency -- --ignored --nocapture
 
 # Chainlink resolution feed (via RTDS)
 cargo test chainlink_rtds_receives_prices -- --ignored --nocapture
@@ -240,6 +243,8 @@ cargo test live_post_unfillable_fok_order -- --ignored --nocapture
 | `binance_network_latency` | No | Network latency to Binance (50 samples via @trade stream) |
 | `coinbase_network_latency` | No | Network latency to Coinbase (50 samples via ticker timestamp) |
 | `okx_network_latency` | No | Network latency to OKX (50 samples via server timestamp) |
+| `bybit_ws_receives_prices` | No | Direct Bybit WS, verify spot tickers stream + gap stats |
+| `bybit_network_latency` | No | Network latency to Bybit (50 samples via publicTrade `T` field) |
 | `chainlink_rtds_receives_prices` | No | Chainlink resolution prices via RTDS (15 samples, gap + latency) |
 | `pipeline_discover_fetch_detect` | No | Full pipeline: discover markets, fetch orderbook, run arb detection |
 | `rest_orderbook_returns_valid_data` | No | Validate orderbook structure and price ranges |
@@ -257,6 +262,7 @@ cargo test live_post_unfillable_fok_order -- --ignored --nocapture
 | Binance | ~31ms | ~32ms | Direct WS, via `@trade` stream `E` field |
 | OKX | ~119ms | ~120ms | Direct WS, via server `ts` field |
 | Coinbase | ~30ms | — | Direct WS, clock offset noted (negative values) |
+| Bybit | ~20ms | ~72ms | Direct WS via publicTrade `T` field, clock offset ~-11ms |
 | Chainlink (RTDS) | ~1.2s | ~1.5s | Via Polymarket RTDS relay (sponsored key pending for direct) |
 
 ### Lint and Format
@@ -282,7 +288,7 @@ Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SD
 | Language | Rust | Performance, safety, reliability |
 | Async runtime | tokio | Industry standard |
 | SDK | rs-clob-client (official) | Only trusted Polymarket Rust client |
-| Price feeds | Binance + Coinbase + OKX (direct WS) | Multi-exchange cross-validation, lowest latency |
+| Price feeds | Binance + Coinbase + OKX + Bybit (direct WS) | Multi-exchange cross-validation, lowest latency |
 | Resolution source | Chainlink Data Streams (planned) | Actual resolution price for 15-min markets |
 | Wallet type | GnosisSafe (Type 2) | Gasless, MetaMask compatible |
 | Fee model | 2% dynamic taker | Symmetric around 0.5, unit-tested |

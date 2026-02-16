@@ -19,7 +19,8 @@ mod strategy;
 use config::RunMode;
 use execution::{DryRunExecutor, Executor, LiveExecutor};
 use feed::{
-    ChainlinkFeed, CoinbaseFeed, CryptoPriceFeed, FeedEvent, OkxFeed, OrderbookFeed, PriceState,
+    BybitFeed, ChainlinkFeed, CoinbaseFeed, CryptoPriceFeed, FeedEvent, OkxFeed, OrderbookFeed,
+    PriceState,
 };
 use market::MarketDiscovery;
 use monitor::TradeLogger;
@@ -175,6 +176,16 @@ async fn main() -> anyhow::Result<()> {
         .collect();
     let okx_feed = OkxFeed::new(tx.clone());
     okx_feed.subscribe(okx_instruments)?;
+
+    // Start Bybit direct price feed
+    let bybit_symbols: Vec<String> = app_config
+        .strategy
+        .assets
+        .iter()
+        .map(|a| feed::bybit::asset_to_bybit_symbol(a))
+        .collect();
+    let bybit_feed = BybitFeed::new(tx.clone());
+    bybit_feed.subscribe(bybit_symbols)?;
 
     // Start Chainlink price feed via RTDS (resolution source)
     let chainlink_feed = ChainlinkFeed::new(tx);

@@ -48,8 +48,8 @@
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ### Phase 3 Test Coverage (cumulative)
-- 48 unit tests passing (+24 from Phase 2: feeds parsing/mapping, PriceState, freshness guard)
-- 15 live integration tests (+7: exchange gap/latency tests, Chainlink RTDS)
+- 50 unit tests passing (+26 from Phase 2: feeds parsing/mapping, PriceState, freshness guard)
+- 17 live integration tests (+9: exchange gap/latency tests for 4 exchanges + Chainlink RTDS)
 - Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted), Chainlink RTDS ~1-1.5s (relay overhead)
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
@@ -69,7 +69,7 @@
 - [x] **Step 3: Multi-Exchange Feeds** — Added Coinbase (`advanced-trade-ws.coinbase.com` ticker) and OKX (`ws.okx.com:8443` tickers) direct WebSocket feeds. Same auto-reconnect pattern as Binance. `FeedEvent::CryptoPrice` now includes `exchange` field. Gap + network latency tests for all 3 exchanges. Measured latency: Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset). 4 unit tests + 4 integration tests.
 - [x] **Step 4: Chainlink Data Streams (via RTDS)** — Resolution source feed using SDK's `subscribe_chainlink_prices()` via `wss://ws-live-data.polymarket.com`. Streams real-time Chainlink oracle prices for BTC/ETH/SOL/XRP. Added as `"chainlink"` source in `PriceState` for cross-validation. Measured latency: ~1-1.5s via RTDS relay. Sponsored Chainlink API key application pending (https://pm-ds-request.streams.chain.link/) for lower latency direct access. 2 unit tests + 1 integration test.
 - [x] **Step 5: Arb Freshness Guard** — `validate_freshness()` between arb detection and risk check. 3 checks: sufficient fresh exchange sources (default 2), price staleness (<2s), cross-exchange price agreement (<0.5% divergence). Config-driven thresholds in `StrategyConfig`. Rejected arbs logged to trade log. 8 unit tests.
-- [ ] Step 6: Bybit direct WS feed — 4th exchange, leads during volatility
+- [x] **Step 6: Bybit Direct WS Feed** — Direct WebSocket to `wss://stream.bybit.com/v5/public/spot` for spot tickers. Uses `lastPrice` (spot tickers are snapshot+delta, update on price change only). Added as `"bybit"` source in `PriceState` (5 sources per asset now). Latency test via `publicTrade` stream `T` field (clock offset ~-11ms, similar to Coinbase). Gap avg ~762ms (quiet periods), faster during volatility. 2 unit tests + 2 integration tests.
 - [ ] Step 7: Volatility tracker — rolling window, dynamic arb confidence thresholds
 - [ ] Step 8: Multi-market prioritization — score markets by arb likelihood
 - [ ] Step 9: Backtesting / dry-run validation — log all arbs with multi-exchange context
@@ -85,9 +85,10 @@ the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely
 **Primary (implemented):**
 - Binance WS (direct bookTicker) — highest volume, primary price leader
 
-**Validation sources (Step 3):**
+**Validation sources (implemented):**
 - Coinbase WS — US-regulated, frequently in Chainlink aggregations
 - OKX WS — high volume on major pairs, leads Asian hours
+- Bybit WS — leads during volatility, key for Asian hours
 
 **Resolution source (implemented — Step 4):**
 - Chainlink Data Streams via RTDS — the actual resolution price for Polymarket 15-min markets.
@@ -95,9 +96,9 @@ the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely
   Currently via Polymarket RTDS relay (~1-1.5s latency). Sponsored Chainlink API key
   application pending for direct access (lower latency).
 
-**Planned:**
-- Bybit WS (Step 6) — leads during volatility, key for Asian hours alongside OKX
+**Pending:**
 - Sponsored Chainlink API key — apply at https://pm-ds-request.streams.chain.link/
+- Latency policy review — sources range from ~31ms (Binance) to ~1.5s (Chainlink RTDS); need tiered freshness or weighted validation
 
 ## Future Opportunities
 - **5-minute markets**: Polymarket launched 5-min crypto markets (Feb 2026), same Chainlink

@@ -805,6 +805,115 @@ async fn coinbase_network_latency() {
     print_latency_stats("Coinbase", &mut latencies_ms);
 }
 
+/// Bybit: verify direct WS tickers delivers BTC prices, measure gaps.
+#[tokio::test]
+#[ignore]
+async fn bybit_ws_receives_prices() {
+    use tokio::sync::broadcast;
+
+    use mtb::feed::bybit::{asset_to_bybit_symbol, BybitFeed};
+    use mtb::feed::FeedEvent;
+
+    let (tx, _) = broadcast::channel::<FeedEvent>(256);
+    let feed = BybitFeed::new(tx.clone());
+    feed.subscribe(vec![asset_to_bybit_symbol("BTC")]).unwrap();
+
+    run_exchange_gap_test("bybit", "BTCUSDT", tx, 15, 15).await;
+}
+
+/// Measure real network latency to Bybit using the publicTrade stream.
+/// Uses trade execution timestamp (T field) vs local clock — same approach as Binance @trade.
+/// Run locally and on VPS to compare: cargo test bybit_network_latency -- --ignored --nocapture
+/// NOTE: requires NTP-synced clock for accurate results.
+#[tokio::test]
+#[ignore]
+async fn bybit_network_latency() {
+    let url = "wss://stream.bybit.com/v5/public/spot";
+    let samples = 50;
+    let mut latencies_ms = Vec::new();
+
+    println!("connecting to Bybit WS for latency test via publicTrade ({samples} samples)...");
+
+    let (ws_stream, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("failed to connect to bybit");
+
+    let (mut write, mut read) = futures::StreamExt::split(ws_stream);
+
+    // Subscribe to public trades (not tickers) — T field has trade execution time
+    let sub_json = serde_json::json!({
+        "op": "subscribe",
+        "args": ["publicTrade.BTCUSDT"]
+    })
+    .to_string();
+
+    futures::SinkExt::send(
+        &mut write,
+        tokio_tungstenite::tungstenite::Message::Text(sub_json.into()),
+    )
+    .await
+    .expect("failed to send subscribe");
+
+    println!("subscribed to publicTrade.BTCUSDT, collecting samples...\n");
+
+    while latencies_ms.len() < samples {
+        use futures::StreamExt;
+        let msg = read.next().await.expect("stream ended").expect("ws error");
+
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            _ => continue,
+        };
+
+        let local_now = chrono::Utc::now().timestamp_millis();
+
+        let parsed: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Only process publicTrade messages
+        let topic = match parsed.get("topic").and_then(|t| t.as_str()) {
+            Some(t) if t.starts_with("publicTrade.") => t,
+            _ => continue,
+        };
+
+        // Get trade data array — may contain multiple trades per message
+        let trades = match parsed.get("data").and_then(|d| d.as_array()) {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for trade in trades {
+            // T = trade execution timestamp (ms)
+            let event_time = match trade.get("T").and_then(|t| t.as_i64()) {
+                Some(ts) => ts,
+                None => continue,
+            };
+
+            let price = trade.get("p").and_then(|p| p.as_str()).unwrap_or("?");
+
+            let latency = local_now - event_time;
+            latencies_ms.push(latency);
+
+            if latencies_ms.len() <= 5 || latencies_ms.len() == samples {
+                println!(
+                    "  [{:>2}] {topic} price=${price} trade_ts={event_time} local_now={local_now} latency={latency}ms",
+                    latencies_ms.len()
+                );
+            } else if latencies_ms.len() == 6 {
+                println!("  ...");
+            }
+
+            if latencies_ms.len() >= samples {
+                break;
+            }
+        }
+    }
+
+    print_latency_stats("Bybit", &mut latencies_ms);
+}
+
 /// Chainlink RTDS: verify we receive resolution prices.
 /// Uses the SDK's RTDS client to subscribe to Chainlink Data Streams prices.
 #[tokio::test]
