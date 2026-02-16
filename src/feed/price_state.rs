@@ -17,10 +17,19 @@ pub struct PriceEntry {
     pub timestamp_ms: i64,
 }
 
+/// Sources that are NOT direct exchange feeds (excluded from freshness validation).
+const NON_EXCHANGE_SOURCES: &[&str] = &["chainlink"];
+
 /// In-memory store for the latest price per exchange+symbol.
 ///
 /// Keyed by `"exchange:symbol"` (e.g. `"binance:btcusdt"`, `"coinbase:btc-usd"`).
 /// Supports querying all exchanges for a given asset.
+///
+/// Sources are split into two tiers:
+/// - **Exchanges** (Binance, Coinbase, OKX, Bybit): fast, direct WS feeds used for
+///   freshness validation ("is this arb real?")
+/// - **Resolution** (Chainlink): slower relay, used separately for resolution confidence
+///   ("what will the market resolve to?")
 pub struct PriceState {
     /// Key: "exchange:symbol", Value: PriceEntry
     prices: HashMap<String, PriceEntry>,
@@ -118,6 +127,7 @@ impl PriceState {
     }
 
     /// Count how many exchanges have fresh (within max_age) price data for an asset.
+    #[allow(dead_code)]
     pub fn count_fresh_sources(&self, asset: &str, max_age: Duration) -> usize {
         self.get_all_for_asset(asset)
             .iter()
@@ -127,6 +137,7 @@ impl PriceState {
 
     /// Get the max divergence percentage between any two exchanges for an asset.
     /// Returns None if fewer than 2 sources have data.
+    #[allow(dead_code)]
     pub fn max_divergence_pct(&self, asset: &str) -> Option<Decimal> {
         let entries = self.get_all_for_asset(asset);
         if entries.len() < 2 {
@@ -169,6 +180,92 @@ impl PriceState {
 
         let divergence = (*max_price - *min_price) / *min_price * Decimal::ONE_HUNDRED;
         divergence <= max_divergence_pct
+    }
+
+    // --- Exchange-only methods (exclude Chainlink and other non-exchange sources) ---
+
+    fn is_exchange(exchange: &str) -> bool {
+        !NON_EXCHANGE_SOURCES.contains(&exchange)
+    }
+
+    /// Get price entries from direct exchange feeds only (excludes Chainlink).
+    pub fn get_exchange_entries(&self, asset: &str) -> Vec<&PriceEntry> {
+        let Some(mappings) = self.asset_map.get(asset) else {
+            return Vec::new();
+        };
+        mappings
+            .iter()
+            .filter(|(exchange, _)| Self::is_exchange(exchange))
+            .filter_map(|(exchange, symbol)| self.prices.get(&Self::key(exchange, symbol)))
+            .collect()
+    }
+
+    /// Count fresh direct exchange sources (excludes Chainlink).
+    pub fn count_fresh_exchange_sources(&self, asset: &str, max_age: Duration) -> usize {
+        self.get_exchange_entries(asset)
+            .iter()
+            .filter(|e| e.updated_at.elapsed() <= max_age)
+            .count()
+    }
+
+    /// Max divergence among direct exchange feeds only (excludes Chainlink).
+    pub fn exchange_max_divergence_pct(&self, asset: &str) -> Option<Decimal> {
+        let entries = self.get_exchange_entries(asset);
+        if entries.len() < 2 {
+            return None;
+        }
+
+        let prices: Vec<Decimal> = entries.iter().map(|e| e.price).collect();
+        let min_price = prices.iter().min().unwrap();
+        let max_price = prices.iter().max().unwrap();
+
+        if *min_price == Decimal::ZERO {
+            return None;
+        }
+
+        Some((*max_price - *min_price) / *min_price * Decimal::ONE_HUNDRED)
+    }
+
+    /// Check if direct exchange feeds agree within tolerance (excludes Chainlink).
+    pub fn exchanges_agree(
+        &self,
+        asset: &str,
+        max_divergence_pct: Decimal,
+        min_sources: usize,
+    ) -> bool {
+        let entries = self.get_exchange_entries(asset);
+        if entries.len() < min_sources {
+            return false;
+        }
+
+        let prices: Vec<Decimal> = entries.iter().map(|e| e.price).collect();
+        let min_price = prices.iter().min().unwrap();
+        let max_price = prices.iter().max().unwrap();
+
+        if *min_price == Decimal::ZERO {
+            return false;
+        }
+
+        let divergence = (*max_price - *min_price) / *min_price * Decimal::ONE_HUNDRED;
+        divergence <= max_divergence_pct
+    }
+
+    /// Staleness of the freshest direct exchange price (excludes Chainlink).
+    pub fn exchange_staleness(&self, asset: &str) -> Option<Duration> {
+        self.get_exchange_entries(asset)
+            .into_iter()
+            .min_by_key(|e| e.updated_at.elapsed())
+            .map(|e| e.updated_at.elapsed())
+    }
+
+    /// Get the Chainlink resolution price for an asset, if available.
+    #[allow(dead_code)]
+    pub fn get_chainlink(&self, asset: &str) -> Option<&PriceEntry> {
+        let mappings = self.asset_map.get(asset)?;
+        mappings
+            .iter()
+            .find(|(exchange, _)| exchange == "chainlink")
+            .and_then(|(exchange, symbol)| self.prices.get(&Self::key(exchange, symbol)))
     }
 }
 
@@ -269,5 +366,63 @@ mod tests {
         assert!(state.get_all_for_asset("DOGE").is_empty());
         assert!(state.get_freshest_for_asset("DOGE").is_none());
         assert!(!state.prices_agree("DOGE", dec!(1.0), 1));
+    }
+
+    #[test]
+    fn exchange_entries_exclude_chainlink() {
+        let mut state = PriceState::new();
+        state.update("binance", "btcusdt", dec!(69000), 1000);
+        state.update("coinbase", "BTC-USD", dec!(69010), 1000);
+        state.update("chainlink", "btc/usd", dec!(69005), 1000);
+
+        // get_all includes chainlink
+        let all = state.get_all_for_asset("BTC");
+        assert_eq!(all.len(), 3);
+
+        // exchange-only excludes chainlink
+        let exchanges = state.get_exchange_entries("BTC");
+        assert_eq!(exchanges.len(), 2);
+        assert!(exchanges.iter().all(|e| e.exchange != "chainlink"));
+    }
+
+    #[test]
+    fn exchange_fresh_count_excludes_chainlink() {
+        let mut state = PriceState::new();
+        state.update("binance", "btcusdt", dec!(69000), 1000);
+        state.update("chainlink", "btc/usd", dec!(69005), 1000);
+
+        // All sources: 2 fresh
+        assert_eq!(state.count_fresh_sources("BTC", Duration::from_secs(10)), 2);
+        // Exchange-only: 1 fresh (chainlink excluded)
+        assert_eq!(
+            state.count_fresh_exchange_sources("BTC", Duration::from_secs(10)),
+            1
+        );
+    }
+
+    #[test]
+    fn exchanges_agree_excludes_chainlink() {
+        let mut state = PriceState::new();
+        state.update("binance", "btcusdt", dec!(69000), 1000);
+        state.update("coinbase", "BTC-USD", dec!(69010), 1000);
+        // Chainlink is far behind — would cause divergence if included
+        state.update("chainlink", "btc/usd", dec!(68500), 1000);
+
+        // prices_agree (all sources) should fail — chainlink diverges 0.7%
+        assert!(!state.prices_agree("BTC", dec!(0.5), 2));
+
+        // exchanges_agree should pass — only binance+coinbase, 0.01% divergence
+        assert!(state.exchanges_agree("BTC", dec!(0.5), 2));
+    }
+
+    #[test]
+    fn get_chainlink_price() {
+        let mut state = PriceState::new();
+        assert!(state.get_chainlink("BTC").is_none());
+
+        state.update("chainlink", "btc/usd", dec!(69005), 1000);
+        let entry = state.get_chainlink("BTC").unwrap();
+        assert_eq!(entry.exchange, "chainlink");
+        assert_eq!(entry.price, dec!(69005));
     }
 }

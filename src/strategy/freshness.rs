@@ -46,6 +46,11 @@ impl std::fmt::Display for FreshnessReject {
 
 /// Validate that an arb opportunity is backed by fresh, agreeing exchange prices.
 ///
+/// Only uses direct exchange feeds (Binance, Coinbase, OKX, Bybit) for validation.
+/// Chainlink is excluded — it's the resolution source with ~1.5s relay latency,
+/// which would cause false divergence rejections during fast price moves and
+/// weak validation when counted as a "fresh source."
+///
 /// Returns `Ok(())` if the arb passes all freshness checks, or `Err(reason)` if rejected.
 /// This is pure logic — no IO, no async.
 pub fn validate_freshness(
@@ -56,8 +61,8 @@ pub fn validate_freshness(
     let asset = &opportunity.asset;
     let max_age = Duration::from_millis(config.max_price_age_ms);
 
-    // Check 1: Do we have enough fresh exchange sources?
-    let fresh_entries = price_state.count_fresh_sources(asset, max_age);
+    // Check 1: Do we have enough fresh direct exchange sources?
+    let fresh_entries = price_state.count_fresh_exchange_sources(asset, max_age);
     if fresh_entries < config.min_fresh_sources {
         return Err(FreshnessReject::InsufficientSources {
             have: fresh_entries,
@@ -65,8 +70,8 @@ pub fn validate_freshness(
         });
     }
 
-    // Check 2: Is the freshest price recent enough?
-    if let Some(staleness) = price_state.staleness(asset) {
+    // Check 2: Is the freshest exchange price recent enough?
+    if let Some(staleness) = price_state.exchange_staleness(asset) {
         if staleness > max_age {
             return Err(FreshnessReject::StalePrice {
                 asset: asset.clone(),
@@ -74,18 +79,17 @@ pub fn validate_freshness(
             });
         }
     } else {
-        // No price data at all
+        // No exchange price data at all
         return Err(FreshnessReject::InsufficientSources {
             have: 0,
             need: config.min_fresh_sources,
         });
     }
 
-    // Check 3: Do the exchanges agree on price?
-    if !price_state.prices_agree(asset, config.max_divergence_pct, config.min_fresh_sources) {
-        // Calculate actual divergence for the error message
+    // Check 3: Do the direct exchanges agree on price?
+    if !price_state.exchanges_agree(asset, config.max_divergence_pct, config.min_fresh_sources) {
         let divergence = price_state
-            .max_divergence_pct(asset)
+            .exchange_max_divergence_pct(asset)
             .unwrap_or(Decimal::ZERO);
         return Err(FreshnessReject::PriceDivergence {
             asset: asset.clone(),

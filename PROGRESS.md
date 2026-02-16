@@ -48,7 +48,7 @@
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ### Phase 3 Test Coverage (cumulative)
-- 50 unit tests passing (+26 from Phase 2: feeds parsing/mapping, PriceState, freshness guard)
+- 54 unit tests passing (+30 from Phase 2: feeds parsing/mapping, PriceState with exchange-only tier, freshness guard)
 - 17 live integration tests (+9: exchange gap/latency tests for 4 exchanges + Chainlink RTDS)
 - Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted), Chainlink RTDS ~1-1.5s (relay overhead)
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
@@ -70,6 +70,7 @@
 - [x] **Step 4: Chainlink Data Streams (via RTDS)** — Resolution source feed using SDK's `subscribe_chainlink_prices()` via `wss://ws-live-data.polymarket.com`. Streams real-time Chainlink oracle prices for BTC/ETH/SOL/XRP. Added as `"chainlink"` source in `PriceState` for cross-validation. Measured latency: ~1-1.5s via RTDS relay. Sponsored Chainlink API key application pending (https://pm-ds-request.streams.chain.link/) for lower latency direct access. 2 unit tests + 1 integration test.
 - [x] **Step 5: Arb Freshness Guard** — `validate_freshness()` between arb detection and risk check. 3 checks: sufficient fresh exchange sources (default 2), price staleness (<2s), cross-exchange price agreement (<0.5% divergence). Config-driven thresholds in `StrategyConfig`. Rejected arbs logged to trade log. 8 unit tests.
 - [x] **Step 6: Bybit Direct WS Feed** — Direct WebSocket to `wss://stream.bybit.com/v5/public/spot` for spot tickers. Uses `lastPrice` (spot tickers are snapshot+delta, update on price change only). Added as `"bybit"` source in `PriceState` (5 sources per asset now). Latency test via `publicTrade` stream `T` field (clock offset ~-11ms, similar to Coinbase). Gap avg ~762ms (quiet periods), faster during volatility. 2 unit tests + 2 integration tests.
+- [x] **Step 6b: Tiered Source Architecture** — Separated price sources into two tiers: **Exchange tier** (Binance, Coinbase, OKX, Bybit — fast, ~20-120ms) used for freshness guard validation, and **Resolution tier** (Chainlink RTDS — ~1-1.5s) used separately for resolution confidence. Freshness guard now uses exchange-only methods (`count_fresh_exchange_sources`, `exchange_staleness`, `exchanges_agree`) so Chainlink's relay latency doesn't cause false divergence rejections or weaken validation by counting as a "fresh source." 4 new PriceState unit tests for exchange-only tier behavior.
 - [ ] Step 7: Volatility tracker — rolling window, dynamic arb confidence thresholds
 - [ ] Step 8: Multi-market prioritization — score markets by arb likelihood
 - [ ] Step 9: Backtesting / dry-run validation — log all arbs with multi-exchange context
@@ -98,7 +99,6 @@ the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely
 
 **Pending:**
 - Sponsored Chainlink API key — apply at https://pm-ds-request.streams.chain.link/
-- Latency policy review — sources range from ~31ms (Binance) to ~1.5s (Chainlink RTDS); need tiered freshness or weighted validation
 
 ## Future Opportunities
 - **5-minute markets**: Polymarket launched 5-min crypto markets (Feb 2026), same Chainlink
@@ -115,8 +115,9 @@ the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely
 | Discovery | Slug-based (`{asset}-updown-15m-{epoch}`) | Ephemeral markets not in Gamma pagination |
 | Fee model | 2% dynamic taker fee | Symmetric around 0.5, validated with unit tests |
 | Strategy | Pure arb (buy both sides < $1.00) | Risk-free, guaranteed profit regardless of outcome |
-| Price feeds | Binance + Coinbase + OKX (direct WS) | Multi-exchange cross-validation for phantom arb rejection |
-| Resolution source | Chainlink Data Streams | Actual resolution price for 15-min markets |
+| Price feeds | Binance + Coinbase + OKX + Bybit (direct WS) | Multi-exchange cross-validation for phantom arb rejection |
+| Resolution source | Chainlink Data Streams (via RTDS) | Actual resolution price for 15-min markets |
+| Source tiering | Exchange tier (fast) vs Resolution tier (slow) | Chainlink ~1.5s excluded from freshness guard; prevents false rejections |
 
 ## Deployment
 - **VPS**: Amsterdam (Hetzner to start, ~€10/month). Best latency tradeoff: ~5-10ms to

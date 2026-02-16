@@ -86,7 +86,7 @@ Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
                                |
            +-------------------+-------------------+
            v                   v                   v
-  CLOB WebSocket       Exchange WebSockets    Chainlink (planned)
+  CLOB WebSocket       Exchange WebSockets    Chainlink RTDS
   (orderbook data)     (direct price feeds)   (resolution price)
            |                   |                   |
            |           +-------+-------+           |
@@ -95,10 +95,10 @@ Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
            |       bookTkr ticker  tickers tickers |
            |           |       |       |           |
            |           +---+---+---+---+           |
-           |               v                       |
-           |         PriceState                    |
-           |         (multi-exchange               |
-           |          cross-validation)            |
+           |               v                       v
+           |         PriceState              PriceState
+           |         (exchange tier:         (resolution tier:
+           |          freshness guard)        Chainlink only)
            |               |                       |
            +-------+-------+-----------+-----------+
                    v
@@ -112,9 +112,9 @@ Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
            - calculate fees precisely
                    v
            Freshness Guard (pure, no IO)
-           - enough fresh exchange sources?
+           - enough fresh exchange sources? (exchanges only, excludes Chainlink)
            - prices stale? (>2s = reject)
-           - exchanges agree? (<0.5% divergence)
+           - exchanges agree? (<0.5% divergence, exchanges only)
                    v
            Risk Manager (sync, RwLock)
            - position limit check
@@ -185,7 +185,7 @@ src/
 
 ## Testing
 
-### Unit Tests (50)
+### Unit Tests (54)
 
 Fast, no network. Run anytime:
 
@@ -193,7 +193,7 @@ Fast, no network. Run anytime:
 cargo test
 ```
 
-Covers: fee model (11), arb detection (5), freshness guard (8), risk manager (7), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Bybit feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (7), position limits (3).
+Covers: fee model (11), arb detection (5), freshness guard (8), risk manager (7), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Bybit feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (11 — includes exchange-only tier tests), position limits (3).
 
 ### Integration Tests (17)
 
@@ -289,7 +289,8 @@ Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SD
 | Async runtime | tokio | Industry standard |
 | SDK | rs-clob-client (official) | Only trusted Polymarket Rust client |
 | Price feeds | Binance + Coinbase + OKX + Bybit (direct WS) | Multi-exchange cross-validation, lowest latency |
-| Resolution source | Chainlink Data Streams (planned) | Actual resolution price for 15-min markets |
+| Resolution source | Chainlink Data Streams (via RTDS) | Actual resolution price for 15-min markets |
+| Source tiering | Exchange (fast) vs Resolution (slow) | Chainlink ~1.5s latency excluded from freshness guard to avoid false rejections |
 | Wallet type | GnosisSafe (Type 2) | Gasless, MetaMask compatible |
 | Fee model | 2% dynamic taker | Symmetric around 0.5, unit-tested |
 | Order type | FOK (fill-or-kill) | No partial fills, no open orders to manage |
