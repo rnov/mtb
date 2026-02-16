@@ -27,6 +27,20 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
         return None;
     }
 
+    // Cap individual leg prices to limit directional exposure on partial fill.
+    // E.g., up=0.06 / down=0.93 is a valid arb but if down fails to fill,
+    // you hold a $0.06 token that's almost certainly worthless.
+    if up_ask > config.max_leg_price || down_ask > config.max_leg_price {
+        debug!(
+            market_id = %snapshot.market.market_id,
+            up_ask = %up_ask,
+            down_ask = %down_ask,
+            max = %config.max_leg_price,
+            "skipping: leg price exceeds max"
+        );
+        return None;
+    }
+
     let (combined_after_fees, up_fee, down_fee) = fees::combined_cost_after_fees(up_ask, down_ask);
     let combined_raw = up_ask + down_ask;
     let profit_per_unit = Decimal::ONE - combined_after_fees;
@@ -102,6 +116,7 @@ mod tests {
             min_fresh_sources: 2,
             max_price_age_ms: 2000,
             max_divergence_pct: dec!(0.5),
+            max_leg_price: dec!(0.90),
         }
     }
 
@@ -161,6 +176,20 @@ mod tests {
         // Small arb that's below the 10% threshold
         let snap = snapshot(Some(dec!(0.48)), Some(dec!(0.48)));
         assert!(detect_arb(&snap, &config).is_none());
+    }
+
+    #[test]
+    fn no_arb_when_leg_price_too_high() {
+        // up=0.05, down=0.92 — valid arb but down exceeds max_leg_price=0.90
+        let snap = snapshot(Some(dec!(0.05)), Some(dec!(0.92)));
+        assert!(detect_arb(&snap, &test_config()).is_none());
+    }
+
+    #[test]
+    fn arb_within_leg_price_limit() {
+        // up=0.40, down=0.50 — both within max_leg_price=0.90
+        let snap = snapshot(Some(dec!(0.40)), Some(dec!(0.50)));
+        assert!(detect_arb(&snap, &test_config()).is_some());
     }
 
     #[test]

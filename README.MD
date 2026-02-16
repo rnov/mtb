@@ -190,7 +190,7 @@ src/
 
 ## Testing
 
-### Unit Tests (59)
+### Unit Tests (61)
 
 Fast, no network. Run anytime:
 
@@ -198,7 +198,7 @@ Fast, no network. Run anytime:
 cargo test
 ```
 
-Covers: fee model (11), arb detection (5), freshness guard (8), risk manager (7), trade logger (3), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Bybit feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (13 — includes exchange-only tier + snapshot tests), position limits (3).
+Covers: fee model (11), arb detection (7 — includes leg price filter), freshness guard (8), risk manager (7), trade logger (3), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Bybit feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (13 — includes exchange-only tier + snapshot tests), position limits (3).
 
 ### Integration Tests (17)
 

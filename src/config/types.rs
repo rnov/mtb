@@ -41,6 +41,9 @@ pub struct StrategyConfig {
     /// Maximum price divergence (%) between exchanges — above this, leg risk is too high
     #[serde(default = "default_max_divergence_pct")]
     pub max_divergence_pct: Decimal,
+    /// Maximum price for either leg — caps directional exposure on partial fill
+    #[serde(default = "default_max_leg_price")]
+    pub max_leg_price: Decimal,
 }
 
 fn default_min_fresh_sources() -> usize {
@@ -53,6 +56,10 @@ fn default_max_price_age_ms() -> u64 {
 
 fn default_max_divergence_pct() -> Decimal {
     Decimal::new(5, 1) // 0.5%
+}
+
+fn default_max_leg_price() -> Decimal {
+    Decimal::new(90, 2) // 0.90
 }
 
 #[derive(Debug, Clone, Deserialize)]

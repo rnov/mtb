@@ -378,11 +378,28 @@ async fn main() -> anyhow::Result<()> {
                                                     risk_manager.record_execution(opportunity.suggested_size_usdc);
                                                     risk_manager.reset_failures();
                                                 } else {
-                                                    risk_manager.record_failure();
-                                                    #[cfg(feature = "telegram")]
-                                                    if risk_manager.is_killed() {
+                                                    // Partial fill = one side filled, other killed.
+                                                    // Immediate kill switch — operator must review
+                                                    // the stranded directional position.
+                                                    let is_partial = result.message.contains("partial");
+                                                    if is_partial {
+                                                        error!(
+                                                            asset = %opportunity.asset,
+                                                            message = %result.message,
+                                                            "PARTIAL FILL — kill switch activated"
+                                                        );
+                                                        risk_manager.kill("partial fill — stranded directional position");
+                                                        #[cfg(feature = "telegram")]
                                                         if let Some(ref n) = notifier {
-                                                            n.notify_kill_switch("consecutive failures threshold").await;
+                                                            n.notify_kill_switch("PARTIAL FILL — one side filled, other killed. Review position manually.").await;
+                                                        }
+                                                    } else {
+                                                        risk_manager.record_failure();
+                                                        #[cfg(feature = "telegram")]
+                                                        if risk_manager.is_killed() {
+                                                            if let Some(ref n) = notifier {
+                                                                n.notify_kill_switch("consecutive failures threshold").await;
+                                                            }
                                                         }
                                                     }
                                                 }

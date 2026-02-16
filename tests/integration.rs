@@ -116,6 +116,7 @@ async fn pipeline_discover_fetch_detect() {
         min_fresh_sources: 2,
         max_price_age_ms: 2000,
         max_divergence_pct: dec!(0.5),
+        max_leg_price: dec!(0.90),
     };
 
     match detect_arb(&snapshot, &strategy_config) {
