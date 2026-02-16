@@ -82,6 +82,29 @@
 - Volatility tracker — rolling window, dynamic thresholds. Premature without real rejection data.
 - Multi-market prioritization — only 4 assets, all processed every tick. No bottleneck to solve yet.
 
+### CLOB Constraints (discovered in live testing)
+- **$1 minimum order size**: Each individual order must cost ≥ $1 (`price × shares ≥ $1`). Orders below this are rejected with "invalid amount for a marketable BUY order, min size: $1". Docs: https://docs.polymarket.com/developers/CLOB/orders/create-order (INVALID_ORDER_MIN_SIZE error).
+- **Maker amount precision**: Market buy orders require maker_amount (USDC = price × shares) to have ≤ 2 decimal places. Integer shares with 2dp prices guarantee this. Fractional shares like 3.03 at $0.45 = $1.3635 (4dp) → rejected.
+- **Batch endpoint (`POST /orders`) doesn't work for FOK**: Returns empty status/order_id. Individual `POST /order` returns proper responses. Use `tokio::join!` for concurrent individual posts.
+- **FOK rejection is an error, not a status**: `POST /order` with FOK returns `Err("order couldn't be fully filled. FOK orders are fully filled or killed.")`, not `Ok(response)` with status Canceled.
+
+### Defensive Sizing Strategy (future consideration)
+Current approach sizes by budget: `units = floor(budget / combined_cost)`. This maximizes capital deployed per arb but also maximizes stranded exposure on partial fill.
+
+**Alternative: minimum-exposure sizing.** Instead of "how much can I buy?", ask "what's the fewest units where the cheap leg clears $1?":
+- `units = ceil($1 / min(up_ask, down_ask))`
+- Then verify `max(up_ask, down_ask) × units` doesn't exceed acceptable stranded exposure
+
+Example: up=$0.37, down=$0.60
+- Budget sizing (current): units = floor($3 / $0.9854) = 3, cheap leg = $1.11, expensive leg = $1.80
+- Minimum-exposure sizing: units = ceil($1 / $0.37) = 3, same result — can't go lower
+
+For lopsided arbs the expensive leg grows fast:
+- up=$0.10, down=$0.85: units = ceil($1/$0.10) = 10, expensive leg = $8.50 stranded exposure
+- This is already filtered by max_leg_price=0.90, but even within range, more lopsided = more risk
+
+Full defensive approach: `units = ceil($1 / min_leg)`, then reject if `max_leg × units > max_stranded_exposure`. Needs real partial fill data to calibrate the threshold.
+
 ### Feed Strategy
 For pure arb (buy both Up + Down < $1.00), the arb is real if both orders fill — exchange
 prices don't determine arb validity. However, exchanges predict **leg risk**: if prices are

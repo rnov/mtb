@@ -23,7 +23,7 @@ impl Executor for DryRunExecutor {
     async fn execute(&self, opportunity: &Opportunity) -> Result<ExecutionResult> {
         // Mirror LiveExecutor share calculation for verification
         let units =
-            round_shares(opportunity.suggested_size_usdc / opportunity.combined_ask_after_fees);
+            floor_shares(opportunity.suggested_size_usdc / opportunity.combined_ask_after_fees);
         let up_cost = units * opportunity.up_ask;
         let down_cost = units * opportunity.down_ask;
         let total_cost = up_cost + down_cost;
@@ -49,7 +49,7 @@ impl Executor for DryRunExecutor {
     }
 }
 
-/// Round share size to 2 decimal places (CLOB lot size constraint).
-fn round_shares(shares: Decimal) -> Decimal {
-    shares.round_dp(2)
+/// Floor share size to whole number (matches LiveExecutor).
+fn floor_shares(shares: Decimal) -> Decimal {
+    shares.floor()
 }

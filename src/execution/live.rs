@@ -78,7 +78,7 @@ impl LiveExecutor {
         // 1 Up + 1 Down = $1 payout. suggested_size_usdc is the total
         // budget, so units = budget / combined_cost_after_fees.
         let units =
-            round_shares(opportunity.suggested_size_usdc / opportunity.combined_ask_after_fees);
+            floor_shares(opportunity.suggested_size_usdc / opportunity.combined_ask_after_fees);
         let up_shares = units;
         let down_shares = units;
 
@@ -120,12 +120,15 @@ impl LiveExecutor {
             .map_err(|e| Error::Sdk(format!("failed to sign DOWN order: {e}")))?;
         let sign_ms = sign_start.elapsed().as_millis();
 
-        // Post both orders as a batch
+        // Post both orders concurrently via individual endpoints.
+        // The batch POST /orders endpoint doesn't return status/order_id for FOK.
+        // Individual POST /order returns proper responses, and tokio::join! fires
+        // both requests simultaneously for minimal timing gap.
         let post_start = Instant::now();
-        let responses = client
-            .post_orders(vec![signed_up, signed_down])
-            .await
-            .map_err(|e| Error::Sdk(format!("failed to post orders: {e}")))?;
+        let (up_result, down_result) = tokio::join!(
+            client.post_order(signed_up),
+            client.post_order(signed_down),
+        );
         let post_ms = post_start.elapsed().as_millis();
 
         info!(
@@ -140,42 +143,75 @@ impl LiveExecutor {
             "latency: execution breakdown"
         );
 
-        // We expect exactly 2 responses (UP, DOWN)
-        if responses.len() != 2 {
-            return Err(Error::Execution(format!(
-                "expected 2 order responses, got {}",
-                responses.len()
-            )));
-        }
+        // For FOK orders via POST /order:
+        // - Ok(response) with status Matched = filled
+        // - Err containing "FOK" / "fully filled" = FOK killed, not filled (normal)
+        // - Err other = actual problem
+        let up_filled = match &up_result {
+            Ok(resp) => {
+                info!(
+                    market_id = %opportunity.market_id,
+                    status = ?resp.status,
+                    order_id = %resp.order_id,
+                    making = %resp.making_amount,
+                    taking = %resp.taking_amount,
+                    "[LIVE] UP order response"
+                );
+                matches!(resp.status, OrderStatusType::Matched)
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if is_fok_rejection(&msg) {
+                    info!(
+                        market_id = %opportunity.market_id,
+                        "[LIVE] UP order FOK killed (no liquidity at price)"
+                    );
+                } else {
+                    error!(
+                        market_id = %opportunity.market_id,
+                        error = %e,
+                        "[LIVE] UP order error"
+                    );
+                }
+                false
+            }
+        };
 
-        let up_resp = &responses[0];
-        let down_resp = &responses[1];
-
-        // Log full response details for debugging
-        info!(
-            market_id = %opportunity.market_id,
-            up_status = ?up_resp.status,
-            up_success = up_resp.success,
-            up_order = %up_resp.order_id,
-            up_making = %up_resp.making_amount,
-            up_taking = %up_resp.taking_amount,
-            down_status = ?down_resp.status,
-            down_success = down_resp.success,
-            down_order = %down_resp.order_id,
-            down_making = %down_resp.making_amount,
-            down_taking = %down_resp.taking_amount,
-            "[LIVE] order responses"
-        );
-
-        // An order is truly filled only if status is Matched.
-        // success=true just means the CLOB accepted the order, not that it filled.
-        // FOK orders that can't match will be accepted then immediately canceled.
-        let up_filled = matches!(up_resp.status, OrderStatusType::Matched);
-        let down_filled = matches!(down_resp.status, OrderStatusType::Matched);
+        let down_filled = match &down_result {
+            Ok(resp) => {
+                info!(
+                    market_id = %opportunity.market_id,
+                    status = ?resp.status,
+                    order_id = %resp.order_id,
+                    making = %resp.making_amount,
+                    taking = %resp.taking_amount,
+                    "[LIVE] DOWN order response"
+                );
+                matches!(resp.status, OrderStatusType::Matched)
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if is_fok_rejection(&msg) {
+                    info!(
+                        market_id = %opportunity.market_id,
+                        "[LIVE] DOWN order FOK killed (no liquidity at price)"
+                    );
+                } else {
+                    error!(
+                        market_id = %opportunity.market_id,
+                        error = %e,
+                        "[LIVE] DOWN order error"
+                    );
+                }
+                false
+            }
+        };
 
         match (up_filled, down_filled) {
             // Both matched — ideal outcome
             (true, true) => {
+                let up_resp = up_result.unwrap();
+                let down_resp = down_result.unwrap();
                 info!(
                     market_id = %opportunity.market_id,
                     up_order = %up_resp.order_id,
@@ -196,11 +232,15 @@ impl LiveExecutor {
             // Partial fill: one matched, the other didn't.
             // The matched side leaves us with directional exposure.
             (true, false) => {
+                let up_resp = up_result.unwrap();
+                let down_reason = match &down_result {
+                    Ok(r) => format!("status={:?}", r.status),
+                    Err(e) => format!("error={e}"),
+                };
                 error!(
                     market_id = %opportunity.market_id,
                     up_order = %up_resp.order_id,
-                    down_status = ?down_resp.status,
-                    down_error = ?down_resp.error_msg,
+                    down = %down_reason,
                     "[LIVE] PARTIAL FILL — UP matched, DOWN not. Exposed to UP side."
                 );
 
@@ -208,20 +248,22 @@ impl LiveExecutor {
                     market_id: opportunity.market_id.clone(),
                     success: false,
                     message: format!(
-                        "partial: UP={} matched, DOWN status={:?}: {}",
+                        "partial: UP={} matched, DOWN {down_reason}",
                         up_resp.order_id,
-                        down_resp.status,
-                        down_resp.error_msg.as_deref().unwrap_or("not matched")
                     ),
                 })
             }
 
             (false, true) => {
+                let down_resp = down_result.unwrap();
+                let up_reason = match &up_result {
+                    Ok(r) => format!("status={:?}", r.status),
+                    Err(e) => format!("error={e}"),
+                };
                 error!(
                     market_id = %opportunity.market_id,
                     down_order = %down_resp.order_id,
-                    up_status = ?up_resp.status,
-                    up_error = ?up_resp.error_msg,
+                    up = %up_reason,
                     "[LIVE] PARTIAL FILL — DOWN matched, UP not. Exposed to DOWN side."
                 );
 
@@ -229,34 +271,53 @@ impl LiveExecutor {
                     market_id: opportunity.market_id.clone(),
                     success: false,
                     message: format!(
-                        "partial: DOWN={} matched, UP status={:?}: {}",
+                        "partial: DOWN={} matched, UP {up_reason}",
                         down_resp.order_id,
-                        up_resp.status,
-                        up_resp.error_msg.as_deref().unwrap_or("not matched")
                     ),
                 })
             }
 
-            // Neither matched — no exposure.
-            // Distinguish expected (Canceled/Unmatched = book moved, normal)
-            // from unexpected (Live = resting order we didn't intend,
-            // Delayed/Unknown = something wrong with the CLOB).
+            // Neither matched — no exposure, normal for FOK when book moved.
             (false, false) => {
-                let up_unexpected = is_unexpected_status(&up_resp.status);
-                let down_unexpected = is_unexpected_status(&down_resp.status);
+                let up_reason = match &up_result {
+                    Ok(r) => format!("{:?}", r.status),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if is_fok_rejection(&msg) {
+                            "FOK killed".to_string()
+                        } else {
+                            format!("error: {msg}")
+                        }
+                    }
+                };
+                let down_reason = match &down_result {
+                    Ok(r) => format!("{:?}", r.status),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if is_fok_rejection(&msg) {
+                            "FOK killed".to_string()
+                        } else {
+                            format!("error: {msg}")
+                        }
+                    }
+                };
+
+                // Check if any result is a non-FOK error (unexpected)
+                let up_unexpected = matches!(&up_result, Err(e) if !is_fok_rejection(&e.to_string()));
+                let down_unexpected = matches!(&down_result, Err(e) if !is_fok_rejection(&e.to_string()));
 
                 if up_unexpected || down_unexpected {
                     warn!(
                         market_id = %opportunity.market_id,
-                        up_status = ?up_resp.status,
-                        down_status = ?down_resp.status,
-                        "[LIVE] unexpected order status — FOK should not rest or delay"
+                        up = %up_reason,
+                        down = %down_reason,
+                        "[LIVE] unexpected order error"
                     );
                 } else {
                     info!(
                         market_id = %opportunity.market_id,
-                        up_status = ?up_resp.status,
-                        down_status = ?down_resp.status,
+                        up = %up_reason,
+                        down = %down_reason,
                         "[LIVE] neither order matched (book moved, FOK killed)"
                     );
                 }
@@ -264,10 +325,7 @@ impl LiveExecutor {
                 Ok(ExecutionResult {
                     market_id: opportunity.market_id.clone(),
                     success: false,
-                    message: format!(
-                        "no fill: UP={:?} DOWN={:?}",
-                        up_resp.status, down_resp.status
-                    ),
+                    message: format!("no fill: UP={up_reason} DOWN={down_reason}"),
                 })
             }
         }
@@ -340,13 +398,11 @@ impl Executor for LiveExecutor {
     }
 }
 
-/// A FOK order status is "unexpected" if the order is resting or delayed
-/// instead of being immediately filled or killed.
-fn is_unexpected_status(status: &OrderStatusType) -> bool {
-    matches!(
-        status,
-        OrderStatusType::Live | OrderStatusType::Delayed | OrderStatusType::Unknown(_)
-    )
+/// FOK rejection: the CLOB returns an error (not a response) when a FOK
+/// order can't be fully filled. This is normal — the book moved.
+fn is_fok_rejection(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("fok") || lower.contains("fully filled") || lower.contains("not filled")
 }
 
 /// Determine if an error is transient (worth retrying).
@@ -363,7 +419,10 @@ fn is_transient(err: &Error) -> bool {
         || msg.contains("temporarily")
 }
 
-/// Round share size to 2 decimal places (CLOB lot size constraint).
-fn round_shares(shares: Decimal) -> Decimal {
-    shares.round_dp(2)
+/// Floor share size to whole number.
+/// The CLOB requires maker_amount (price × size) to have ≤2 decimal places.
+/// Since prices are 2dp, integer shares guarantee this: 0.45 × 3 = 1.35 (2dp).
+/// Fractional shares like 3.03 would produce 0.45 × 3.03 = 1.3635 (4dp) → rejected.
+fn floor_shares(shares: Decimal) -> Decimal {
+    shares.floor()
 }

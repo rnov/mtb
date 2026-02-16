@@ -393,7 +393,18 @@ async fn main() -> anyhow::Result<()> {
                                                         if let Some(ref n) = notifier {
                                                             n.notify_kill_switch("PARTIAL FILL — one side filled, other killed. Review position manually.").await;
                                                         }
+                                                    } else if result.message.contains("no fill") {
+                                                        // FOK killed on both sides — normal, book moved.
+                                                        // No cost, no exposure. Don't count toward
+                                                        // consecutive failures (would trigger kill switch
+                                                        // on normal market behavior).
+                                                        info!(
+                                                            asset = %opportunity.asset,
+                                                            message = %result.message,
+                                                            "FOK killed both sides (normal, no cost)"
+                                                        );
                                                     } else {
+                                                        // Unexpected non-fill failure — count it
                                                         risk_manager.record_failure();
                                                         #[cfg(feature = "telegram")]
                                                         if risk_manager.is_killed() {
