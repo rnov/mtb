@@ -250,7 +250,7 @@ async fn main() -> anyhow::Result<()> {
                             let arb_us = arb_start.elapsed().as_micros();
 
                             if let Some(opportunity) = arb_result {
-                                // Freshness guard — validate against exchange prices
+                                // Freshness guard — assess leg risk via exchange agreement
                                 let fresh_start = std::time::Instant::now();
                                 let fresh_result = validate_freshness(
                                     &opportunity,

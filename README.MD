@@ -2,7 +2,7 @@
 
 Polymarket trading bot targeting 15-minute crypto up/down markets (BTC, ETH, SOL, XRP).
 
-Detects arbitrage when `up_ask + down_ask < 1.0` after fees, cross-validated against real-time prices from Binance, Coinbase, OKX, and Bybit to reject phantom arbs. Built in Rust on top of the official [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) SDK.
+Detects arbitrage when `up_ask + down_ask < 1.0` after fees. Uses real-time prices from Binance, Coinbase, OKX, and Bybit to assess leg risk — if exchanges show rapid price movement, orderbook asks are likely to be canceled before we can fill both sides. Built in Rust on top of the official [Polymarket/rs-clob-client](https://github.com/Polymarket/rs-clob-client) SDK.
 
 ## Status
 
@@ -111,10 +111,10 @@ Gamma (HTTP 60s poll) --> Market Registry (active MarketPairs)
            - detect arb (up_ask + down_ask < 1.0)
            - calculate fees precisely
                    v
-           Freshness Guard (pure, no IO)
+           Freshness Guard — leg risk filter (pure, no IO)
            - enough fresh exchange sources? (exchanges only, excludes Chainlink)
-           - prices stale? (>2s = reject)
-           - exchanges agree? (<0.5% divergence, exchanges only)
+           - prices stale? (>2s = book likely moving)
+           - exchanges agree? (<0.5% divergence = stable book, safe to fill)
                    v
            Risk Manager (sync, RwLock)
            - position limit check
@@ -157,13 +157,13 @@ src/
     okx.rs                OKX direct WS: public tickers channel
     bybit.rs              Bybit direct WS: V5 spot tickers (lastPrice)
     chainlink.rs          Chainlink Data Streams via RTDS (resolution source)
-    price_state.rs        Multi-exchange price state + cross-validation
+    price_state.rs        Multi-exchange price state + leg-risk assessment
     types.rs              FeedEvent enum (OrderbookUpdate, CryptoPrice, ChainlinkPrice, Disconnected, Reconnected)
 
   strategy/
     mod.rs                Re-exports
     arb.rs                Pure arb: up_ask + down_ask < 1.0 after fees
-    freshness.rs          Freshness guard: validate arb against exchange prices
+    freshness.rs          Freshness guard: assess leg risk via exchange price agreement
     fees.rs               Polymarket dynamic taker fee model (2% rate)
     types.rs              MarketSnapshot, Opportunity, OpportunityKind
 
@@ -288,9 +288,9 @@ Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SD
 | Language | Rust | Performance, safety, reliability |
 | Async runtime | tokio | Industry standard |
 | SDK | rs-clob-client (official) | Only trusted Polymarket Rust client |
-| Price feeds | Binance + Coinbase + OKX + Bybit (direct WS) | Multi-exchange cross-validation, lowest latency |
-| Resolution source | Chainlink Data Streams (via RTDS) | Actual resolution price for 15-min markets |
-| Source tiering | Exchange (fast) vs Resolution (slow) | Chainlink ~1.5s latency excluded from freshness guard to avoid false rejections |
+| Price feeds | Binance + Coinbase + OKX + Bybit (direct WS) | Leg-risk assessment: detect rapid price movement before filling both sides |
+| Resolution source | Chainlink Data Streams (via RTDS) | Resolution oracle — detects danger-zone moments near strike, diagnoses abnormal oracle behavior |
+| Source tiering | Exchange (fast) vs Resolution (slow) | Exchanges assess leg risk; Chainlink tracks resolution separately (different latency profiles) |
 | Wallet type | GnosisSafe (Type 2) | Gasless, MetaMask compatible |
 | Fee model | 2% dynamic taker | Symmetric around 0.5, unit-tested |
 | Order type | FOK (fill-or-kill) | No partial fills, no open orders to manage |

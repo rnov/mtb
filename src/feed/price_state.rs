@@ -27,9 +27,9 @@ const NON_EXCHANGE_SOURCES: &[&str] = &["chainlink"];
 ///
 /// Sources are split into two tiers:
 /// - **Exchanges** (Binance, Coinbase, OKX, Bybit): fast, direct WS feeds used for
-///   freshness validation ("is this arb real?")
-/// - **Resolution** (Chainlink): slower relay, used separately for resolution confidence
-///   ("what will the market resolve to?")
+///   leg-risk assessment (exchange agreement = stable book = safe to fill both sides)
+/// - **Resolution** (Chainlink): slower relay, used separately for oracle tracking
+///   (danger-zone detection near strike, abnormal oracle behavior diagnosis)
 pub struct PriceState {
     /// Key: "exchange:symbol", Value: PriceEntry
     prices: HashMap<String, PriceEntry>,

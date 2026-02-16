@@ -13,7 +13,7 @@ pub enum FreshnessReject {
     InsufficientSources { have: usize, need: usize },
     /// Exchange prices are too stale.
     StalePrice { asset: String, age_ms: u128 },
-    /// Exchanges disagree on price (possible rapid movement / phantom arb).
+    /// Exchanges disagree on price — book is moving, high leg risk.
     PriceDivergence {
         asset: String,
         divergence_pct: Decimal,
@@ -44,14 +44,17 @@ impl std::fmt::Display for FreshnessReject {
     }
 }
 
-/// Validate that an arb opportunity is backed by fresh, agreeing exchange prices.
+/// Assess leg risk for an arb opportunity using exchange price agreement.
 ///
-/// Only uses direct exchange feeds (Binance, Coinbase, OKX, Bybit) for validation.
-/// Chainlink is excluded — it's the resolution source with ~1.5s relay latency,
-/// which would cause false divergence rejections during fast price moves and
-/// weak validation when counted as a "fresh source."
+/// For pure arb (buy both sides < $1.00), the arb is valid if both orders fill —
+/// exchange prices don't determine arb validity. However, if exchanges show rapid
+/// price movement, Polymarket asks are likely to be canceled before we can fill
+/// both sides. This guard skips arbs when leg risk is high.
 ///
-/// Returns `Ok(())` if the arb passes all freshness checks, or `Err(reason)` if rejected.
+/// Only uses direct exchange feeds (Binance, Coinbase, OKX, Bybit).
+/// Chainlink is excluded — it's the resolution oracle with different latency profile.
+///
+/// Returns `Ok(())` if leg risk is acceptable, or `Err(reason)` to skip.
 /// This is pure logic — no IO, no async.
 pub fn validate_freshness(
     opportunity: &Opportunity,

@@ -38,7 +38,7 @@ pub struct StrategyConfig {
     /// Maximum age (ms) of exchange prices before considered stale
     #[serde(default = "default_max_price_age_ms")]
     pub max_price_age_ms: u64,
-    /// Maximum price divergence (%) between exchanges before rejecting arb
+    /// Maximum price divergence (%) between exchanges — above this, leg risk is too high
     #[serde(default = "default_max_divergence_pct")]
     pub max_divergence_pct: Decimal,
 }

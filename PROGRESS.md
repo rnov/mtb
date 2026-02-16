@@ -65,10 +65,10 @@
 ## Phase 3: External Feeds + Arb Validation — IN PROGRESS
 - [x] **Step 0: Latency Instrumentation** — Timing spans across the hot path: tick-to-trade in `main.rs` (arb_us, risk_us, exec_ms, total_ms), execution breakdown in `live.rs` (auth_ms, build_ms, sign_ms, post_ms). All logged as structured tracing fields.
 - [x] **Step 1: Binance Direct Price Feed** — Direct WebSocket to `wss://stream.binance.com:9443` (NOT via Polymarket RTDS relay). Combined `bookTicker` stream for BTC/ETH/SOL/XRP. Auto-reconnect on disconnect. Processing latency logged every 1000 ticks. Network latency test via `@trade` stream (30ms from local, run on VPS to compare). 3 unit tests + 2 integration tests.
-- [x] **Step 2: Price State Manager** — Multi-exchange `PriceState` keyed by `exchange:symbol`. Tracks latest price, staleness, freshness per exchange+asset. Cross-exchange validation via `prices_agree()` for phantom arb rejection. 7 unit tests.
+- [x] **Step 2: Price State Manager** — Multi-exchange `PriceState` keyed by `exchange:symbol`. Tracks latest price, staleness, freshness per exchange+asset. Exchange agreement via `prices_agree()` for leg-risk assessment — if exchanges diverge, book is moving and fills are unlikely. 7 unit tests.
 - [x] **Step 3: Multi-Exchange Feeds** — Added Coinbase (`advanced-trade-ws.coinbase.com` ticker) and OKX (`ws.okx.com:8443` tickers) direct WebSocket feeds. Same auto-reconnect pattern as Binance. `FeedEvent::CryptoPrice` now includes `exchange` field. Gap + network latency tests for all 3 exchanges. Measured latency: Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset). 4 unit tests + 4 integration tests.
-- [x] **Step 4: Chainlink Data Streams (via RTDS)** — Resolution source feed using SDK's `subscribe_chainlink_prices()` via `wss://ws-live-data.polymarket.com`. Streams real-time Chainlink oracle prices for BTC/ETH/SOL/XRP. Added as `"chainlink"` source in `PriceState` for cross-validation. Measured latency: ~1-1.5s via RTDS relay. Sponsored Chainlink API key application pending (https://pm-ds-request.streams.chain.link/) for lower latency direct access. 2 unit tests + 1 integration test.
-- [x] **Step 5: Arb Freshness Guard** — `validate_freshness()` between arb detection and risk check. 3 checks: sufficient fresh exchange sources (default 2), price staleness (<2s), cross-exchange price agreement (<0.5% divergence). Config-driven thresholds in `StrategyConfig`. Rejected arbs logged to trade log. 8 unit tests.
+- [x] **Step 4: Chainlink Data Streams (via RTDS)** — Resolution source feed using SDK's `subscribe_chainlink_prices()` via `wss://ws-live-data.polymarket.com`. Streams real-time Chainlink oracle prices for BTC/ETH/SOL/XRP. Added as `"chainlink"` source in `PriceState` (resolution tier, separate from exchange tier). Not essential for pure arb, but useful for: detecting danger-zone moments near strike, diagnosing abnormal oracle behavior, and future directional strategies. Measured latency: ~1-1.5s via RTDS relay. Sponsored Chainlink API key application pending (https://pm-ds-request.streams.chain.link/) for lower latency direct access. 2 unit tests + 1 integration test.
+- [x] **Step 5: Arb Freshness Guard (leg-risk filter)** — `validate_freshness()` between arb detection and risk check. Assesses whether both sides can be filled before the book moves. 3 checks: sufficient fresh exchange sources (default 2), price staleness (<2s = book likely moving), exchange price agreement (<0.5% divergence = stable book, safe to fill). Config-driven thresholds in `StrategyConfig`. Rejected arbs logged to trade log. 8 unit tests.
 - [x] **Step 6: Bybit Direct WS Feed** — Direct WebSocket to `wss://stream.bybit.com/v5/public/spot` for spot tickers. Uses `lastPrice` (spot tickers are snapshot+delta, update on price change only). Added as `"bybit"` source in `PriceState` (5 sources per asset now). Latency test via `publicTrade` stream `T` field (clock offset ~-11ms, similar to Coinbase). Gap avg ~762ms (quiet periods), faster during volatility. 2 unit tests + 2 integration tests.
 - [x] **Step 6b: Tiered Source Architecture** — Separated price sources into two tiers: **Exchange tier** (Binance, Coinbase, OKX, Bybit — fast, ~20-120ms) used for freshness guard validation, and **Resolution tier** (Chainlink RTDS — ~1-1.5s) used separately for resolution confidence. Freshness guard now uses exchange-only methods (`count_fresh_exchange_sources`, `exchange_staleness`, `exchanges_agree`) so Chainlink's relay latency doesn't cause false divergence rejections or weaken validation by counting as a "fresh source." 4 new PriceState unit tests for exchange-only tier behavior.
 - [ ] Step 7: Volatility tracker — rolling window, dynamic arb confidence thresholds
@@ -78,24 +78,27 @@
 - [ ] Step 11: Deployment prep + production
 
 ### Feed Strategy
-Polymarket's 15-min crypto markets resolve via **Chainlink Data Streams** which aggregate
-from multiple exchanges. More price sources = higher confidence that a detected arb is
-real (not phantom from stale orderbooks). If all exchanges agree the price is stable,
-the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely phantom.
+For pure arb (buy both Up + Down < $1.00), the arb is real if both orders fill — exchange
+prices don't determine arb validity. However, exchanges predict **leg risk**: if prices are
+moving rapidly, resting asks on Polymarket are likely to be canceled before we can fill both
+sides. Exchange agreement = stable book = safe to attempt both fills.
 
-**Primary (implemented):**
+**Exchange tier (leg-risk assessment):**
 - Binance WS (direct bookTicker) — highest volume, primary price leader
-
-**Validation sources (implemented):**
 - Coinbase WS — US-regulated, frequently in Chainlink aggregations
 - OKX WS — high volume on major pairs, leads Asian hours
 - Bybit WS — leads during volatility, key for Asian hours
 
-**Resolution source (implemented — Step 4):**
-- Chainlink Data Streams via RTDS — the actual resolution price for Polymarket 15-min markets.
-  Knowing Chainlink's price = knowing the answer before the market closes.
-  Currently via Polymarket RTDS relay (~1-1.5s latency). Sponsored Chainlink API key
-  application pending for direct access (lower latency).
+If exchanges agree (divergence <0.5%), the underlying price is stable and Polymarket
+asks are unlikely to be pulled. If they diverge, the book is moving — skip or require
+larger edge / smaller size.
+
+**Resolution tier (oracle tracking):**
+- Chainlink Data Streams via RTDS — the actual resolution oracle for Polymarket 15-min markets.
+  Not essential for pure arb (we profit regardless of outcome), but useful for:
+  detecting danger-zone moments near strike, diagnosing abnormal oracle behavior, and
+  future directional strategies. Currently via Polymarket RTDS relay (~1-1.5s latency).
+  Sponsored Chainlink API key application pending for direct access (lower latency).
 
 **Pending:**
 - Sponsored Chainlink API key — apply at https://pm-ds-request.streams.chain.link/
@@ -115,9 +118,9 @@ the Polymarket orderbook is trustworthy. If they show a spike, the arb is likely
 | Discovery | Slug-based (`{asset}-updown-15m-{epoch}`) | Ephemeral markets not in Gamma pagination |
 | Fee model | 2% dynamic taker fee | Symmetric around 0.5, validated with unit tests |
 | Strategy | Pure arb (buy both sides < $1.00) | Risk-free, guaranteed profit regardless of outcome |
-| Price feeds | Binance + Coinbase + OKX + Bybit (direct WS) | Multi-exchange cross-validation for phantom arb rejection |
-| Resolution source | Chainlink Data Streams (via RTDS) | Actual resolution price for 15-min markets |
-| Source tiering | Exchange tier (fast) vs Resolution tier (slow) | Chainlink ~1.5s excluded from freshness guard; prevents false rejections |
+| Price feeds | Binance + Coinbase + OKX + Bybit (direct WS) | Leg-risk assessment: exchange agreement = stable book = safe to fill both sides |
+| Resolution source | Chainlink Data Streams (via RTDS) | Oracle tracking — danger-zone detection, abnormal behavior diagnosis |
+| Source tiering | Exchange tier (fast) vs Resolution tier (slow) | Exchanges assess leg risk; Chainlink tracks resolution separately |
 
 ## Deployment
 - **VPS**: Amsterdam (Hetzner to start, ~€10/month). Best latency tradeoff: ~5-10ms to
