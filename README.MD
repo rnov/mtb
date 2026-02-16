@@ -286,6 +286,48 @@ Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SD
 - GnosisSafe trades are gasless (Polymarket relays)
 - USDC allowances must be set (triggered by first manual trade on Polymarket UI)
 
+## Execution Semantics
+
+### Order Flow
+
+Each arb opportunity submits two **FOK (fill-or-kill)** orders as a batch via `POST /orders`:
+1. Buy Up token at the ask price
+2. Buy Down token at the ask price
+
+Both orders use **equal share counts** (units = budget / combined_cost) so every Up token is paired with a Down token. The CLOB processes them independently — they are **not atomic**.
+
+### Order Status
+
+The CLOB returns a `status` field per order. `success: true` only means the order was accepted, not filled.
+
+| Status | Meaning | Action |
+|--------|---------|--------|
+| `Matched` | Filled — tokens exchanged, USDC spent | Only true "success" |
+| `Canceled` | FOK killed — no matching liquidity at our price | Normal, no cost, book moved |
+| `Unmatched` | Could not match | Normal, no cost |
+| `Live` | Order resting on book | **Unexpected for FOK** — warns, counts as failure |
+| `Delayed` | Order queued by CLOB | Unexpected — warns, counts as failure |
+
+### Outcome Matrix
+
+| Up | Down | Result |
+|----|------|--------|
+| Matched | Matched | Arb filled — guaranteed profit at resolution |
+| Matched | Not matched | **Partial fill** — kill switch triggers immediately, operator must review |
+| Not matched | Matched | **Partial fill** — kill switch triggers immediately, operator must review |
+| Not matched | Not matched | No fill — normal, no cost, bot continues |
+
+### Safety Guards
+
+| Guard | Config | Effect |
+|-------|--------|--------|
+| Max leg price | `max_leg_price = 0.90` | Rejects arbs where either side > $0.90 — limits directional exposure on partial fill |
+| Partial fill kill switch | Automatic | Halts all trading on first partial fill — `/resume` to restart |
+| Exposure cap | `max_exposure_usdc` | Cumulative USDC spent limit per session |
+| Consecutive failures | `max_consecutive_failures` | Kill switch after N failed orders in a row |
+| Feed disconnect | `feed_disconnect_timeout_secs` | Halts trading when orderbook WS disconnects |
+| Freshness guard | `min_fresh_sources`, `max_price_age_ms`, `max_divergence_pct` | Skips arbs when exchange prices are stale or divergent (high leg risk) |
+
 ## Key Design Decisions
 
 | Decision | Choice | Why |

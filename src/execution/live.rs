@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use rust_decimal::Decimal;
 use tracing::{error, info, warn};
 
-use polymarket_client_sdk::clob::types::{OrderType, Side, SignatureType};
+use polymarket_client_sdk::clob::types::{OrderStatusType, OrderType, Side, SignatureType};
 use polymarket_client_sdk::clob::{Client, Config};
 use polymarket_client_sdk::types::U256;
 
@@ -150,49 +150,68 @@ impl LiveExecutor {
 
         let up_resp = &responses[0];
         let down_resp = &responses[1];
-        let up_ok = up_resp.success;
-        let down_ok = down_resp.success;
 
-        match (up_ok, down_ok) {
-            // Both filled — ideal outcome
+        // Log full response details for debugging
+        info!(
+            market_id = %opportunity.market_id,
+            up_status = ?up_resp.status,
+            up_success = up_resp.success,
+            up_order = %up_resp.order_id,
+            up_making = %up_resp.making_amount,
+            up_taking = %up_resp.taking_amount,
+            down_status = ?down_resp.status,
+            down_success = down_resp.success,
+            down_order = %down_resp.order_id,
+            down_making = %down_resp.making_amount,
+            down_taking = %down_resp.taking_amount,
+            "[LIVE] order responses"
+        );
+
+        // An order is truly filled only if status is Matched.
+        // success=true just means the CLOB accepted the order, not that it filled.
+        // FOK orders that can't match will be accepted then immediately canceled.
+        let up_filled = matches!(up_resp.status, OrderStatusType::Matched);
+        let down_filled = matches!(down_resp.status, OrderStatusType::Matched);
+
+        match (up_filled, down_filled) {
+            // Both matched — ideal outcome
             (true, true) => {
                 info!(
                     market_id = %opportunity.market_id,
                     up_order = %up_resp.order_id,
                     down_order = %down_resp.order_id,
-                    "[LIVE] both orders filled"
+                    "[LIVE] both orders MATCHED"
                 );
 
                 Ok(ExecutionResult {
                     market_id: opportunity.market_id.clone(),
                     success: true,
                     message: format!(
-                        "filled: UP={} DOWN={}",
+                        "matched: UP={} DOWN={}",
                         up_resp.order_id, down_resp.order_id
                     ),
                 })
             }
 
-            // Partial fill: one succeeded, the other failed.
-            // Since we use FOK, the failed one wasn't filled at all.
-            // The filled side leaves us with directional exposure — log a warning.
-            // We don't attempt to sell back automatically (risky in fast markets),
-            // but we report it clearly so the risk manager can react.
+            // Partial fill: one matched, the other didn't.
+            // The matched side leaves us with directional exposure.
             (true, false) => {
                 error!(
                     market_id = %opportunity.market_id,
                     up_order = %up_resp.order_id,
+                    down_status = ?down_resp.status,
                     down_error = ?down_resp.error_msg,
-                    "[LIVE] PARTIAL FILL — UP filled, DOWN rejected. Exposed to UP side."
+                    "[LIVE] PARTIAL FILL — UP matched, DOWN not. Exposed to UP side."
                 );
 
                 Ok(ExecutionResult {
                     market_id: opportunity.market_id.clone(),
                     success: false,
                     message: format!(
-                        "partial: UP={} filled, DOWN rejected: {}",
+                        "partial: UP={} matched, DOWN status={:?}: {}",
                         up_resp.order_id,
-                        down_resp.error_msg.as_deref().unwrap_or("unknown")
+                        down_resp.status,
+                        down_resp.error_msg.as_deref().unwrap_or("not matched")
                     ),
                 })
             }
@@ -201,36 +220,53 @@ impl LiveExecutor {
                 error!(
                     market_id = %opportunity.market_id,
                     down_order = %down_resp.order_id,
+                    up_status = ?up_resp.status,
                     up_error = ?up_resp.error_msg,
-                    "[LIVE] PARTIAL FILL — DOWN filled, UP rejected. Exposed to DOWN side."
+                    "[LIVE] PARTIAL FILL — DOWN matched, UP not. Exposed to DOWN side."
                 );
 
                 Ok(ExecutionResult {
                     market_id: opportunity.market_id.clone(),
                     success: false,
                     message: format!(
-                        "partial: DOWN={} filled, UP rejected: {}",
+                        "partial: DOWN={} matched, UP status={:?}: {}",
                         down_resp.order_id,
-                        up_resp.error_msg.as_deref().unwrap_or("unknown")
+                        up_resp.status,
+                        up_resp.error_msg.as_deref().unwrap_or("not matched")
                     ),
                 })
             }
 
-            // Both failed — no exposure, but something is wrong
+            // Neither matched — no exposure.
+            // Distinguish expected (Canceled/Unmatched = book moved, normal)
+            // from unexpected (Live = resting order we didn't intend,
+            // Delayed/Unknown = something wrong with the CLOB).
             (false, false) => {
-                warn!(
-                    market_id = %opportunity.market_id,
-                    up_error = ?up_resp.error_msg,
-                    down_error = ?down_resp.error_msg,
-                    "[LIVE] both orders rejected"
-                );
+                let up_unexpected = is_unexpected_status(&up_resp.status);
+                let down_unexpected = is_unexpected_status(&down_resp.status);
+
+                if up_unexpected || down_unexpected {
+                    warn!(
+                        market_id = %opportunity.market_id,
+                        up_status = ?up_resp.status,
+                        down_status = ?down_resp.status,
+                        "[LIVE] unexpected order status — FOK should not rest or delay"
+                    );
+                } else {
+                    info!(
+                        market_id = %opportunity.market_id,
+                        up_status = ?up_resp.status,
+                        down_status = ?down_resp.status,
+                        "[LIVE] neither order matched (book moved, FOK killed)"
+                    );
+                }
+
                 Ok(ExecutionResult {
                     market_id: opportunity.market_id.clone(),
                     success: false,
                     message: format!(
-                        "rejected: UP={} DOWN={}",
-                        up_resp.error_msg.as_deref().unwrap_or("unknown"),
-                        down_resp.error_msg.as_deref().unwrap_or("unknown")
+                        "no fill: UP={:?} DOWN={:?}",
+                        up_resp.status, down_resp.status
                     ),
                 })
             }
@@ -302,6 +338,15 @@ impl Executor for LiveExecutor {
             }
         }
     }
+}
+
+/// A FOK order status is "unexpected" if the order is resting or delayed
+/// instead of being immediately filled or killed.
+fn is_unexpected_status(status: &OrderStatusType) -> bool {
+    matches!(
+        status,
+        OrderStatusType::Live | OrderStatusType::Delayed | OrderStatusType::Unknown(_)
+    )
 }
 
 /// Determine if an error is transient (worth retrying).
