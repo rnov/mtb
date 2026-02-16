@@ -74,9 +74,13 @@ impl LiveExecutor {
         let down_token_id = U256::from_str(&opportunity.down_token_id)
             .map_err(|e| Error::Execution(format!("invalid down token ID: {e}")))?;
 
-        // Calculate share sizes: size_usdc / price = number of shares
-        let up_shares = round_shares(opportunity.suggested_size_usdc / opportunity.up_ask);
-        let down_shares = round_shares(opportunity.suggested_size_usdc / opportunity.down_ask);
+        // For parity arb, we need EQUAL shares on both sides:
+        // 1 Up + 1 Down = $1 payout. suggested_size_usdc is the total
+        // budget, so units = budget / combined_cost_after_fees.
+        let units =
+            round_shares(opportunity.suggested_size_usdc / opportunity.combined_ask_after_fees);
+        let up_shares = units;
+        let down_shares = units;
 
         // Build UP order: buy up_token at the ask price (FOK = fill-or-kill)
         let build_start = Instant::now();
@@ -126,6 +130,9 @@ impl LiveExecutor {
 
         info!(
             market_id = %opportunity.market_id,
+            units = %units,
+            up_price = %opportunity.up_ask,
+            down_price = %opportunity.down_ask,
             auth_ms = auth_ms,
             build_ms = build_ms,
             sign_ms = sign_ms,
