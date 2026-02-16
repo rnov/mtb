@@ -23,7 +23,7 @@ use feed::{
     PriceState,
 };
 use market::MarketDiscovery;
-use monitor::TradeLogger;
+use monitor::{PipelineStage, TradeLogger, TradeRecord};
 use risk::RiskManager;
 use strategy::{detect_arb, validate_freshness, MarketSnapshot};
 
@@ -250,6 +250,10 @@ async fn main() -> anyhow::Result<()> {
                             let arb_us = arb_start.elapsed().as_micros();
 
                             if let Some(opportunity) = arb_result {
+                                // Snapshot exchange prices at decision time (for logging)
+                                let max_age = Duration::from_millis(app_config.strategy.max_price_age_ms);
+                                let exchange_snapshot = price_state.snapshot_asset(&opportunity.asset, max_age);
+
                                 // Freshness guard — assess leg risk via exchange agreement
                                 let fresh_start = std::time::Instant::now();
                                 let fresh_result = validate_freshness(
@@ -269,7 +273,19 @@ async fn main() -> anyhow::Result<()> {
                                         total_us = total_us,
                                         "freshness guard rejected arb"
                                     );
-                                    if let Err(le) = logger.log_rejected(&opportunity, &reason.to_string()) {
+                                    let record = TradeRecord {
+                                        recorded_at: Utc::now(),
+                                        opportunity: &opportunity,
+                                        stage: PipelineStage::FreshnessRejected,
+                                        reason: Some(reason.to_string()),
+                                        exchange_snapshot,
+                                        arb_us,
+                                        fresh_us: Some(fresh_us),
+                                        risk_us: None,
+                                        exec_ms: None,
+                                        total_us,
+                                    };
+                                    if let Err(le) = logger.log_record(&record) {
                                         error!(error = %le, "failed to write rejection log");
                                     }
                                     continue;
@@ -286,20 +302,36 @@ async fn main() -> anyhow::Result<()> {
                                         match executor.execute(&opportunity).await {
                                             Ok(result) => {
                                                 let exec_ms = exec_start.elapsed().as_millis();
-                                                let total_ms = tick_start.elapsed().as_millis();
+                                                let total_us = tick_start.elapsed().as_micros();
 
                                                 info!(
                                                     asset = %opportunity.asset,
                                                     arb_us = arb_us,
                                                     risk_us = risk_us,
                                                     exec_ms = exec_ms,
-                                                    total_ms = total_ms,
+                                                    total_us = total_us,
                                                     success = result.success,
                                                     "latency: tick-to-trade"
                                                 );
 
-                                                // Log trade with full execution details
-                                                if let Err(e) = logger.log_trade(&opportunity, &result) {
+                                                let (stage, reason) = if result.success {
+                                                    (PipelineStage::Executed, None)
+                                                } else {
+                                                    (PipelineStage::ExecutionFailed, Some(result.message.clone()))
+                                                };
+                                                let record = TradeRecord {
+                                                    recorded_at: Utc::now(),
+                                                    opportunity: &opportunity,
+                                                    stage,
+                                                    reason,
+                                                    exchange_snapshot: exchange_snapshot.clone(),
+                                                    arb_us,
+                                                    fresh_us: Some(fresh_us),
+                                                    risk_us: Some(risk_us),
+                                                    exec_ms: Some(exec_ms),
+                                                    total_us,
+                                                };
+                                                if let Err(e) = logger.log_record(&record) {
                                                     error!(error = %e, "failed to write trade log");
                                                 }
                                                 // Telegram alert for trades
@@ -322,14 +354,29 @@ async fn main() -> anyhow::Result<()> {
                                             }
                                             Err(e) => {
                                                 let exec_ms = exec_start.elapsed().as_millis();
-                                                let total_ms = tick_start.elapsed().as_millis();
+                                                let total_us = tick_start.elapsed().as_micros();
 
                                                 error!(
                                                     error = %e,
                                                     exec_ms = exec_ms,
-                                                    total_ms = total_ms,
+                                                    total_us = total_us,
                                                     "execution failed"
                                                 );
+                                                let record = TradeRecord {
+                                                    recorded_at: Utc::now(),
+                                                    opportunity: &opportunity,
+                                                    stage: PipelineStage::ExecutionFailed,
+                                                    reason: Some(e.to_string()),
+                                                    exchange_snapshot: exchange_snapshot.clone(),
+                                                    arb_us,
+                                                    fresh_us: Some(fresh_us),
+                                                    risk_us: Some(risk_us),
+                                                    exec_ms: Some(exec_ms),
+                                                    total_us,
+                                                };
+                                                if let Err(le) = logger.log_record(&record) {
+                                                    error!(error = %le, "failed to write trade log");
+                                                }
                                                 #[cfg(feature = "telegram")]
                                                 if let Some(ref n) = notifier {
                                                     n.notify_execution_error(&opportunity.asset, &e.to_string()).await;
@@ -354,8 +401,19 @@ async fn main() -> anyhow::Result<()> {
                                             total_us = total_us,
                                             "risk check rejected opportunity"
                                         );
-                                        // Log rejected opportunities too (for analysis)
-                                        if let Err(le) = logger.log_rejected(&opportunity, &reason) {
+                                        let record = TradeRecord {
+                                            recorded_at: Utc::now(),
+                                            opportunity: &opportunity,
+                                            stage: PipelineStage::RiskRejected,
+                                            reason: Some(reason),
+                                            exchange_snapshot,
+                                            arb_us,
+                                            fresh_us: Some(fresh_us),
+                                            risk_us: Some(risk_us),
+                                            exec_ms: None,
+                                            total_us,
+                                        };
+                                        if let Err(le) = logger.log_record(&record) {
                                             error!(error = %le, "failed to write rejection log");
                                         }
                                     }

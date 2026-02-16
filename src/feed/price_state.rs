@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rust_decimal::Decimal;
+use serde::Serialize;
 
 /// Latest price snapshot for a single exchange+symbol pair.
 #[derive(Debug, Clone)]
@@ -15,6 +16,26 @@ pub struct PriceEntry {
     pub updated_at: Instant,
     /// Exchange timestamp in milliseconds (wall clock, for logging).
     pub timestamp_ms: i64,
+}
+
+/// A single exchange's price at snapshot time (for logging).
+#[derive(Debug, Clone, Serialize)]
+pub struct ExchangePrice {
+    pub exchange: String,
+    pub price: Decimal,
+    pub age_ms: u128,
+}
+
+/// Snapshot of all exchange prices for one asset at a point in time.
+/// Captures the full context needed to understand why an arb was accepted or rejected.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExchangeSnapshot {
+    pub asset: String,
+    pub exchanges: Vec<ExchangePrice>,
+    pub fresh_count: usize,
+    pub divergence_pct: Option<Decimal>,
+    pub chainlink_price: Option<Decimal>,
+    pub chainlink_age_ms: Option<u128>,
 }
 
 /// Sources that are NOT direct exchange feeds (excluded from freshness validation).
@@ -258,6 +279,43 @@ impl PriceState {
             .map(|e| e.updated_at.elapsed())
     }
 
+    /// Capture a serializable snapshot of all exchange prices for an asset.
+    /// Used for enriching trade log records with full context at decision time.
+    pub fn snapshot_asset(&self, asset: &str, max_age: Duration) -> ExchangeSnapshot {
+        let exchanges: Vec<ExchangePrice> = self
+            .get_exchange_entries(asset)
+            .iter()
+            .map(|e| ExchangePrice {
+                exchange: e.exchange.clone(),
+                price: e.price,
+                age_ms: e.updated_at.elapsed().as_millis(),
+            })
+            .collect();
+
+        let fresh_count = exchanges
+            .iter()
+            .filter(|e| e.age_ms <= max_age.as_millis())
+            .count();
+        let divergence_pct = self.exchange_max_divergence_pct(asset);
+
+        let (chainlink_price, chainlink_age_ms) = match self.get_chainlink(asset) {
+            Some(entry) => (
+                Some(entry.price),
+                Some(entry.updated_at.elapsed().as_millis()),
+            ),
+            None => (None, None),
+        };
+
+        ExchangeSnapshot {
+            asset: asset.to_string(),
+            exchanges,
+            fresh_count,
+            divergence_pct,
+            chainlink_price,
+            chainlink_age_ms,
+        }
+    }
+
     /// Get the Chainlink resolution price for an asset, if available.
     #[allow(dead_code)]
     pub fn get_chainlink(&self, asset: &str) -> Option<&PriceEntry> {
@@ -413,6 +471,40 @@ mod tests {
 
         // exchanges_agree should pass — only binance+coinbase, 0.01% divergence
         assert!(state.exchanges_agree("BTC", dec!(0.5), 2));
+    }
+
+    #[test]
+    fn snapshot_asset_captures_context() {
+        let mut state = PriceState::new();
+        state.update("binance", "btcusdt", dec!(69000), 1000);
+        state.update("coinbase", "BTC-USD", dec!(69010), 1000);
+        state.update("chainlink", "btc/usd", dec!(69005), 1000);
+
+        let snap = state.snapshot_asset("BTC", Duration::from_secs(10));
+        assert_eq!(snap.asset, "BTC");
+        assert_eq!(snap.exchanges.len(), 2); // excludes chainlink
+        assert_eq!(snap.fresh_count, 2);
+        assert!(snap.divergence_pct.is_some());
+        assert_eq!(snap.chainlink_price, Some(dec!(69005)));
+        assert!(snap.chainlink_age_ms.is_some());
+
+        // Verify exchange names
+        let names: Vec<&str> = snap.exchanges.iter().map(|e| e.exchange.as_str()).collect();
+        assert!(names.contains(&"binance"));
+        assert!(names.contains(&"coinbase"));
+        assert!(!names.contains(&"chainlink"));
+    }
+
+    #[test]
+    fn snapshot_asset_no_chainlink() {
+        let mut state = PriceState::new();
+        state.update("binance", "btcusdt", dec!(69000), 1000);
+
+        let snap = state.snapshot_asset("BTC", Duration::from_secs(10));
+        assert_eq!(snap.exchanges.len(), 1);
+        assert_eq!(snap.fresh_count, 1);
+        assert!(snap.chainlink_price.is_none());
+        assert!(snap.chainlink_age_ms.is_none());
     }
 
     #[test]

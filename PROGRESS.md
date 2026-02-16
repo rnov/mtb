@@ -48,7 +48,7 @@
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
 ### Phase 3 Test Coverage (cumulative)
-- 54 unit tests passing (+30 from Phase 2: feeds parsing/mapping, PriceState with exchange-only tier, freshness guard)
+- 59 unit tests passing (+35 from Phase 2: feeds, PriceState with exchange-only tier + snapshots, freshness guard, trade logger)
 - 17 live integration tests (+9: exchange gap/latency tests for 4 exchanges + Chainlink RTDS)
 - Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted), Chainlink RTDS ~1-1.5s (relay overhead)
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
@@ -71,11 +71,13 @@
 - [x] **Step 5: Arb Freshness Guard (leg-risk filter)** — `validate_freshness()` between arb detection and risk check. Assesses whether both sides can be filled before the book moves. 3 checks: sufficient fresh exchange sources (default 2), price staleness (<2s = book likely moving), exchange price agreement (<0.5% divergence = stable book, safe to fill). Config-driven thresholds in `StrategyConfig`. Rejected arbs logged to trade log. 8 unit tests.
 - [x] **Step 6: Bybit Direct WS Feed** — Direct WebSocket to `wss://stream.bybit.com/v5/public/spot` for spot tickers. Uses `lastPrice` (spot tickers are snapshot+delta, update on price change only). Added as `"bybit"` source in `PriceState` (5 sources per asset now). Latency test via `publicTrade` stream `T` field (clock offset ~-11ms, similar to Coinbase). Gap avg ~762ms (quiet periods), faster during volatility. 2 unit tests + 2 integration tests.
 - [x] **Step 6b: Tiered Source Architecture** — Separated price sources into two tiers: **Exchange tier** (Binance, Coinbase, OKX, Bybit — fast, ~20-120ms) used for freshness guard validation, and **Resolution tier** (Chainlink RTDS — ~1-1.5s) used separately for resolution confidence. Freshness guard now uses exchange-only methods (`count_fresh_exchange_sources`, `exchange_staleness`, `exchanges_agree`) so Chainlink's relay latency doesn't cause false divergence rejections or weaken validation by counting as a "fresh source." 4 new PriceState unit tests for exchange-only tier behavior.
-- [ ] Step 7: Volatility tracker — rolling window, dynamic arb confidence thresholds
-- [ ] Step 8: Multi-market prioritization — score markets by arb likelihood
-- [ ] Step 9: Backtesting / dry-run validation — log all arbs with multi-exchange context
-- [ ] Step 10: EOA implementation
-- [ ] Step 11: Deployment prep + production
+- [x] **Step 7: Dry-Run Validation Logging** — Enriched `TradeRecord` with full pipeline context for data collection. Every detected arb now logs: `PipelineStage` (freshness_rejected, risk_rejected, executed, execution_failed), `ExchangeSnapshot` (each exchange's price + age at decision time, fresh count, divergence, Chainlink price/age), and timing breakdown (arb_us, fresh_us, risk_us, exec_ms, total_us). `PriceState::snapshot_asset()` captures exchange context at arb detection time. Run in `dry_run` mode to collect data for threshold tuning without placing orders. 5 new unit tests (2 snapshot, 3 logger serialization). 59 unit + 17 integration tests total.
+- [ ] Step 8: EOA implementation
+- [ ] Step 9: Deployment prep + production
+
+**Deferred (data-driven, revisit after dry-run):**
+- Volatility tracker — rolling window, dynamic thresholds. Premature without real rejection data.
+- Multi-market prioritization — only 4 assets, all processed every tick. No bottleneck to solve yet.
 
 ### Feed Strategy
 For pure arb (buy both Up + Down < $1.00), the arb is real if both orders fill — exchange
