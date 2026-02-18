@@ -65,10 +65,10 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
         return None;
     }
 
-    // Size: limited by max_order_size_usdc. Each unit costs combined_after_fees in USDC.
     // Units are floored to integers (CLOB requires maker_amount ≤ 2dp).
-    let units = (config.max_order_size_usdc / combined_after_fees).floor();
+    let budget_units = (config.max_order_size_usdc / combined_after_fees).floor();
 
+    // 8a: Min-notional filter.
     // CLOB enforces a minimum notional per order (default $1).
     // Each leg is an independent order, so both must individually clear the minimum.
     // min_shares = ceil(min_order_usdc / leg_price) — fewest shares where cost ≥ $1.
@@ -76,19 +76,40 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
     let min_shares_down = (config.min_order_usdc / down_ask).ceil();
     let size_min = min_shares_up.max(min_shares_down);
 
-    if units < size_min {
+    if budget_units < size_min {
         debug!(
             market_id = %snapshot.market.market_id,
             up_ask = %up_ask,
             down_ask = %down_ask,
-            units = %units,
+            budget_units = %budget_units,
             size_min = %size_min,
             "skipping: budget yields too few units to clear CLOB $1 minimum per leg"
         );
         return None;
     }
 
-    let suggested_size = config.max_order_size_usdc;
+    // 8c: Executable size check.
+    // For a FOK buy at the best ask, we can only fill shares available at that price level.
+    // executable = size at first (cheapest) ask level. size_cap = min of both sides.
+    let executable_up = snapshot.up_ask_levels.first().map(|(_, s)| *s).unwrap_or(Decimal::ZERO);
+    let executable_down = snapshot.down_ask_levels.first().map(|(_, s)| *s).unwrap_or(Decimal::ZERO);
+    let size_cap = executable_up.min(executable_down).floor();
+
+    if size_cap < size_min {
+        debug!(
+            market_id = %snapshot.market.market_id,
+            executable_up = %executable_up,
+            executable_down = %executable_down,
+            size_cap = %size_cap,
+            size_min = %size_min,
+            "skipping: book depth too thin to fill minimum order on both legs"
+        );
+        return None;
+    }
+
+    // Cap units to what the book can actually fill, then re-derive suggested size.
+    let units = budget_units.min(size_cap);
+    let suggested_size = units * combined_after_fees;
     let expected_profit = units * profit_per_unit;
 
     let opp = Opportunity {
@@ -156,6 +177,7 @@ mod tests {
         }
     }
 
+    /// Snapshot with liquid depth (100 shares at each ask price).
     fn snapshot(up_ask: Option<Decimal>, down_ask: Option<Decimal>) -> MarketSnapshot {
         MarketSnapshot {
             market: test_market(),
@@ -163,8 +185,27 @@ mod tests {
             up_best_ask: up_ask,
             down_best_bid: None,
             down_best_ask: down_ask,
-            up_ask_levels: vec![],
-            down_ask_levels: vec![],
+            up_ask_levels: up_ask.map(|p| vec![(p, dec!(100))]).unwrap_or_default(),
+            down_ask_levels: down_ask.map(|p| vec![(p, dec!(100))]).unwrap_or_default(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    /// Snapshot with explicit depth for thin-book tests.
+    fn snapshot_with_depth(
+        up_ask: Decimal,
+        down_ask: Decimal,
+        up_depth: Vec<(Decimal, Decimal)>,
+        down_depth: Vec<(Decimal, Decimal)>,
+    ) -> MarketSnapshot {
+        MarketSnapshot {
+            market: test_market(),
+            up_best_bid: None,
+            up_best_ask: Some(up_ask),
+            down_best_bid: None,
+            down_best_ask: Some(down_ask),
+            up_ask_levels: up_depth,
+            down_ask_levels: down_depth,
             timestamp: Utc::now(),
         }
     }
@@ -235,6 +276,57 @@ mod tests {
         // size_min = 3, units=3 >= 3 → accept
         let snap = snapshot(Some(dec!(0.47)), Some(dec!(0.49)));
         assert!(detect_arb(&snap, &test_config()).is_some());
+    }
+
+    #[test]
+    fn rejects_when_depth_is_zero() {
+        // No depth on UP side — size_cap = 0 < size_min → skip
+        let snap = snapshot_with_depth(
+            dec!(0.47),
+            dec!(0.49),
+            vec![],                        // UP: no depth
+            vec![(dec!(0.49), dec!(100))], // DOWN: liquid
+        );
+        assert!(detect_arb(&snap, &test_config()).is_none());
+    }
+
+    #[test]
+    fn rejects_when_depth_below_size_min() {
+        // up=0.47, down=0.49, budget=$3 → size_min=3
+        // UP depth = 2 shares → size_cap = min(2, 100) = 2 < 3 → skip
+        let snap = snapshot_with_depth(
+            dec!(0.47),
+            dec!(0.49),
+            vec![(dec!(0.47), dec!(2))],   // UP: only 2 shares
+            vec![(dec!(0.49), dec!(100))], // DOWN: liquid
+        );
+        assert!(detect_arb(&snap, &test_config()).is_none());
+    }
+
+    #[test]
+    fn caps_units_to_available_depth() {
+        // up=0.45, down=0.45, budget=$3 → budget_units=3, size_min=3
+        // UP depth = 2 shares → size_cap = 2... wait, 2 < size_min=3 → would skip.
+        // Use depth=5 on one side to test capping: budget_units=3, size_cap=5 → units=3.
+        // Or: budget=$10 → budget_units=10, depth=4 → units capped to 4.
+        let config = StrategyConfig {
+            max_order_size_usdc: dec!(10),
+            ..test_config()
+        };
+        // up=0.45, down=0.45: size_min = ceil(1/0.45)=3, budget_units=floor(10/0.918)=10
+        // UP depth=4, DOWN depth=6 → size_cap=4 → units capped to 4
+        let snap = snapshot_with_depth(
+            dec!(0.45),
+            dec!(0.45),
+            vec![(dec!(0.45), dec!(4))],  // UP: 4 shares
+            vec![(dec!(0.45), dec!(6))],  // DOWN: 6 shares
+        );
+        let opp = detect_arb(&snap, &config);
+        assert!(opp.is_some());
+        let opp = opp.unwrap();
+        // suggested_size = 4 * combined_after_fees ≈ 4 * 0.918 = 3.672
+        assert!(opp.suggested_size_usdc < dec!(4));
+        assert!(opp.suggested_size_usdc > dec!(3));
     }
 
     #[test]

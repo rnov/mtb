@@ -78,7 +78,7 @@
 - [ ] **Step 8: Executable Arb Strategy** — Depth + notional checks to turn theoretical arbs into actually executable ones. Four sub-steps:
   - [x] **8a: Min-notional filter** — `ceil(1/up_ask)` and `ceil(1/down_ask)` gives minimum shares needed to clear CLOB's $1/order minimum. Skip arb if `floor(budget/combined_cost) < max(min_shares_up, min_shares_down)`. Pure math, no new data. Fixes the "$1 minimum" CLOB rejections.
   - [x] **8b: Orderbook depth propagation** — `BestBidAsk` currently only carries price, no size. Extend to pass ask-side levels `Vec<(price, size)>` from CLOB WS through `FeedEvent` → `MarketSnapshot`. Infrastructure change that unlocks 8c and 8d.
-  - [ ] **8c: Executable size check** — `executable_up/down` = available shares at best ask. `size_cap = min(executable_up, executable_down)`. `size_min = max(min_shares_up, min_shares_down)`. Skip if `size_cap < size_min`. Prevents sending FOK into thin books.
+  - [x] **8c: Executable size check** — `executable_up/down` = available shares at best ask. `size_cap = min(executable_up, executable_down)`. `size_min = max(min_shares_up, min_shares_down)`. Skip if `size_cap < size_min`. Prevents sending FOK into thin books.
   - [ ] **8d: VWAP arb preservation** — At `size_cap`, compute VWAP per leg across depth levels. Verify `vwap_up(size_cap) + vwap_down(size_cap) < 1 − fees − buffer`. Ensures scaling into depth doesn't erode the edge.
 - [ ] Step 9: EOA implementation
 - [ ] Step 10: Deployment prep + production
