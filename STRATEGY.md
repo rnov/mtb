@@ -45,7 +45,25 @@ Chainlink (RTDS) is tracked separately as a resolution source — not used for f
 
 ---
 
-### 4. Arb Detection — 5 Filters
+### 4. Order Sizing
+
+Two quantities are computed once and used throughout the filters below:
+
+```
+budget_units   = floor(max_order_size_usdc / combined_after_fees)   ← max pairs the budget can buy
+size_cap       = floor(min(executable_up, executable_down))          ← max pairs the book can fill
+units          = min(budget_units, size_cap)
+total_cost_usdc = units × combined_after_fees
+expected_profit = units × profit_per_unit
+```
+
+Both sides always use the **same unit count** — every UP token is paired with a DOWN token.
+
+Config: `strategy.max_order_size_usdc`
+
+---
+
+### 5. Arb Detection — 5 Filters
 
 All in `src/strategy/arb.rs`, executed in order on every orderbook tick.
 
@@ -78,7 +96,6 @@ The CLOB rejects any individual order below `min_order_usdc` ($1.00). Minimum sh
 min_shares_up   = ceil(min_order_usdc / up_ask)
 min_shares_down = ceil(min_order_usdc / down_ask)
 size_min        = max(min_shares_up, min_shares_down)
-budget_units    = floor(max_order_size_usdc / combined_after_fees)
 
 skip if budget_units < size_min
 ```
@@ -101,14 +118,15 @@ min_shares_down = ceil($1 / $0.66) = 2 pairs   → 2 × $0.66 = $1.32 ≥ $1 ✓
 size_min        = max(4, 2) = 4 pairs
 ```
 
-Both `budget_units` and `size_min` are **pair counts**. The budget can only afford 3 pairs, but the CLOB requires at least 4 (to make the UP leg order worth ≥ $1). 
+Both `budget_units` and `size_min` are **pair counts**. The budget can only afford 3 pairs, but the CLOB requires at least 4 (to make the UP leg order worth ≥ $1).
 ```
-At 4 pairs: 
-    4 × $0.30 = $1.20 (UP ✓) 
-    4 × $0.66 = $2.64 (DOWN ✓) = $3.84 
+At 4 pairs:
+    4 × $0.30 = $1.20 (UP ✓)
+    4 × $0.66 = $2.64 (DOWN ✓) = $3.84
     before fees — but the budget only covers 3.
 ```
-Skip
+Skip.
+
 Config: `strategy.min_order_usdc`, `strategy.max_order_size_usdc`
 
 #### Filter 5 — Executable size (Step 8c)
@@ -122,19 +140,6 @@ skip if size_cap < size_min
 units = min(budget_units, size_cap)
 ```
 Prevents FOK orders into books too thin to fill.
-
----
-
-### 5. Order Sizing
-
-```
-budget_units        = floor(max_order_size_usdc / combined_after_fees)
-units               = min(budget_units, size_cap)
-suggested_size_usdc = units × combined_after_fees
-expected_profit     = units × profit_per_unit
-```
-
-Both sides always use the **same unit count** — every UP token is paired with a DOWN token.
 
 ---
 
