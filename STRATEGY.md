@@ -82,23 +82,33 @@ budget_units    = floor(max_order_size_usdc / combined_after_fees)
 
 skip if budget_units < size_min
 ```
-Example: `up=$0.30` → need ≥ 4 units (4 × $0.30 = $1.20). With `budget=$3` and combined ~$0.96 → `budget_units=3` < `size_min=4` → skip.
-
 Example: `up=$0.30`, `down=$0.66`, `budget=$3`:
 ```
-fee_up          = min(0.30, 0.70) × 2% = $0.006
-fee_down        = min(0.66, 0.34) × 2% = $0.0068
-combined        = 0.30 + 0.006 + 0.66 + 0.0068 = $0.9728
-
-budget_units    = floor($3 / $0.9728) = 3
-min_shares_up   = ceil($1 / $0.30)   = 4   ← the binding constraint
-min_shares_down = ceil($1 / $0.66)   = 2
-size_min        = max(4, 2) = 4
-
-budget_units=3 < size_min=4 → skip
+fee_up   = min(0.30, 0.70) × 2% = $0.006
+fee_down = min(0.66, 0.34) × 2% = $0.0068
+combined = 0.30 + 0.006 + 0.66 + 0.0068 = $0.9728   ← cost per UP+DOWN pair
 ```
-At $0.30/share, 3 units would cost only $0.90 — below the $1 CLOB minimum.
 
+How many pairs can the budget afford?
+```
+budget_units = floor($3 / $0.9728) = 3 pairs   (3 × $0.9728 = $2.92)
+```
+
+What is the minimum number of pairs so each leg order individually meets the $1 CLOB floor?
+```
+min_shares_up   = ceil($1 / $0.30) = 4 pairs   → 4 × $0.30 = $1.20 ≥ $1 ✓  (3 × $0.30 = $0.90 ✗)
+min_shares_down = ceil($1 / $0.66) = 2 pairs   → 2 × $0.66 = $1.32 ≥ $1 ✓
+size_min        = max(4, 2) = 4 pairs
+```
+
+Both `budget_units` and `size_min` are **pair counts**. The budget can only afford 3 pairs, but the CLOB requires at least 4 (to make the UP leg order worth ≥ $1). 
+```
+At 4 pairs: 
+    4 × $0.30 = $1.20 (UP ✓) 
+    4 × $0.66 = $2.64 (DOWN ✓) = $3.84 
+    before fees — but the budget only covers 3.
+```
+Skip
 Config: `strategy.min_order_usdc`, `strategy.max_order_size_usdc`
 
 #### Filter 5 — Executable size (Step 8c)
