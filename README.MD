@@ -286,11 +286,61 @@ Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SD
 - GnosisSafe trades are gasless (Polymarket relays)
 - USDC allowances must be set (triggered by first manual trade on Polymarket UI)
 
+## Arb Detection Strategy
+
+Detection moves from **theoretical** to **executable** in four layers:
+
+### Layer 1 — Price check (always active)
+```
+up_ask + down_ask < 1 − fees
+```
+Basic parity condition. Necessary but not sufficient — doesn't say whether the book can actually fill.
+
+### Layer 2 — Min-notional filter (Step 8a)
+The CLOB rejects any order below $1. Minimum shares needed per leg:
+```
+min_shares_up   = ceil(1 / up_ask)
+min_shares_down = ceil(1 / down_ask)
+units           = floor(budget / combined_cost)
+
+skip if units < max(min_shares_up, min_shares_down)
+```
+Example: up=$0.30 → need ≥ 4 units (4 × $0.30 = $1.20). With budget $3 and combined ~$0.96 → 3 units available < 4 required → skip.
+
+### Layer 3 — Executable size check (Step 8c, requires 8b)
+The ask price might exist but with only 1 share available. We need enough depth on both sides:
+```
+executable_up   = shares available at best_ask_up
+executable_down = shares available at best_ask_down
+size_cap = min(executable_up, executable_down)
+size_min = max(min_shares_up, min_shares_down)
+
+skip if size_cap < size_min
+```
+Prevents sending FOK orders into books too thin to fill.
+
+### Layer 4 — VWAP arb preservation (Step 8d, requires 8b)
+If we need to scale across multiple price levels, the average fill price (VWAP) may exceed the best ask and erase the edge:
+```
+vwap_up(size_cap) + vwap_down(size_cap) < 1 − fees − buffer
+
+skip if this fails
+```
+Ensures the arb edge survives at the actual executable size.
+
+### Why this matters
+| Check | Problem it solves |
+|-------|------------------|
+| Price check | Confirms arb exists in theory |
+| Min-notional | Avoids CLOB $1/order rejections |
+| Executable size | Avoids FOK kills from thin books |
+| VWAP | Avoids eroding edge by scaling into depth |
+
 ## Execution Semantics
 
 ### Order Flow
 
-Each arb opportunity submits two **FOK (fill-or-kill)** orders as a batch via `POST /orders`:
+Each arb opportunity submits two **FOK (fill-or-kill)** orders concurrently via individual `POST /order` calls (`tokio::join!`):
 1. Buy Up token at the ask price
 2. Buy Down token at the ask price
 
