@@ -74,11 +74,9 @@ impl LiveExecutor {
         let down_token_id = U256::from_str(&opportunity.down_token_id)
             .map_err(|e| Error::Execution(format!("invalid down token ID: {e}")))?;
 
-        // For parity arb, we need EQUAL shares on both sides:
-        // 1 Up + 1 Down = $1 payout. suggested_size_usdc is the total
-        // budget, so units = budget / combined_cost_after_fees.
-        let units =
-            floor_shares(opportunity.suggested_size_usdc / opportunity.combined_ask_after_fees);
+        // Units are pre-computed by the strategy layer and stored on the opportunity.
+        // Both legs always get the same share count: 1 Up + 1 Down = $1 payout.
+        let units = floor_shares(opportunity.units);
         let up_shares = units;
         let down_shares = units;
 
@@ -339,7 +337,7 @@ impl Executor for LiveExecutor {
             market_id = %opportunity.market_id,
             asset = %opportunity.asset,
             profit = %opportunity.expected_profit_usdc,
-            size = %opportunity.suggested_size_usdc,
+            size = %opportunity.total_cost_usdc,
             "[LIVE] executing arb"
         );
 

@@ -391,7 +391,7 @@ async fn main() -> anyhow::Result<()> {
                                                     n.notify_trade(&opportunity, &result).await;
                                                 }
                                                 if result.success {
-                                                    risk_manager.record_execution(opportunity.suggested_size_usdc);
+                                                    risk_manager.record_execution(opportunity.total_cost_usdc);
                                                     risk_manager.reset_failures();
                                                 } else {
                                                     // Partial fill = one side filled, other killed.

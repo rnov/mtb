@@ -137,7 +137,7 @@ impl Notifier {
              Buy Down: {down_ask} (fee {down_fee})\n\
              Combined: {combined} → {after_fees} (fees {total_fee})\n\
              Profit/unit: {profit}\n\
-             Size: {size} USDC | P&L: {pnl} USDC\n\
+             Units: {units} | Cost: {cost} USDC | P&L: {pnl} USDC\n\
              {message}",
             status = if result.success { "Filled" } else { "Failed" },
             asset = opportunity.asset,
@@ -149,7 +149,8 @@ impl Notifier {
             after_fees = opportunity.combined_ask_after_fees,
             total_fee = total_fee,
             profit = opportunity.profit_per_unit,
-            size = opportunity.suggested_size_usdc,
+            units = opportunity.units,
+            cost = opportunity.total_cost_usdc,
             pnl = opportunity.expected_profit_usdc,
             message = result.message,
         );

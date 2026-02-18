@@ -110,12 +110,12 @@ impl RiskManager {
         // Exposure limit check
         if !state
             .limits
-            .can_add_exposure(opportunity.suggested_size_usdc)
+            .can_add_exposure(opportunity.total_cost_usdc)
         {
             return Err(Error::Risk(format!(
                 "exposure limit exceeded: current={}, requested={}, max={}",
                 state.limits.current_exposure(),
-                opportunity.suggested_size_usdc,
+                opportunity.total_cost_usdc,
                 self.config.max_exposure_usdc,
             )));
         }
@@ -304,7 +304,8 @@ mod tests {
             combined_ask: dec!(0.90),
             combined_ask_after_fees: dec!(0.92),
             profit_per_unit: dec!(0.08),
-            suggested_size_usdc: dec!(50),
+            units: dec!(50),
+            total_cost_usdc: dec!(50),
             expected_profit_usdc: dec!(4),
             up_token_id: "123".into(),
             down_token_id: "456".into(),

@@ -21,9 +21,8 @@ impl DryRunExecutor {
 #[async_trait]
 impl Executor for DryRunExecutor {
     async fn execute(&self, opportunity: &Opportunity) -> Result<ExecutionResult> {
-        // Mirror LiveExecutor share calculation for verification
-        let units =
-            floor_shares(opportunity.suggested_size_usdc / opportunity.combined_ask_after_fees);
+        // Units are pre-computed by the strategy layer.
+        let units = floor_shares(opportunity.units);
         let up_cost = units * opportunity.up_ask;
         let down_cost = units * opportunity.down_ask;
         let total_cost = up_cost + down_cost;

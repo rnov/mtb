@@ -6,8 +6,8 @@ chain_id = 137
 [strategy]
 min_arb_profit = "0.005"
 assets = ["BTC", "ETH", "SOL", "XRP"]
-max_order_size_usdc = "3"
-max_leg_price = "0.50"       # never buy either side above this — avoids directional exposure on partial fill
+max_order_size_usdc = "4"
+max_leg_price = "0.70"       # never buy either side above this — avoids directional exposure on partial fill
 min_fresh_sources = 2        # need at least 2 exchanges with fresh prices for leg-risk check
 max_price_age_ms = 2000      # exchange prices older than 2s = book likely moving, skip
 max_divergence_pct = "0.5"   # exchanges diverge >0.5% = high leg risk, skip

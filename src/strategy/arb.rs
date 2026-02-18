@@ -107,9 +107,9 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
         return None;
     }
 
-    // Cap units to what the book can actually fill, then re-derive suggested size.
+    // Cap units to what the book can actually fill, then derive total cost.
     let units = budget_units.min(size_cap);
-    let suggested_size = units * combined_after_fees;
+    let total_cost = units * combined_after_fees;
     let expected_profit = units * profit_per_unit;
 
     let opp = Opportunity {
@@ -124,7 +124,8 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
         down_fee,
         combined_ask_after_fees: combined_after_fees,
         profit_per_unit,
-        suggested_size_usdc: suggested_size,
+        units,
+        total_cost_usdc: total_cost,
         expected_profit_usdc: expected_profit.round_dp(6),
         up_token_id: snapshot.market.up_token_id.clone(),
         down_token_id: snapshot.market.down_token_id.clone(),
@@ -325,8 +326,8 @@ mod tests {
         assert!(opp.is_some());
         let opp = opp.unwrap();
         // suggested_size = 4 * combined_after_fees ≈ 4 * 0.918 = 3.672
-        assert!(opp.suggested_size_usdc < dec!(4));
-        assert!(opp.suggested_size_usdc > dec!(3));
+        assert!(opp.total_cost_usdc < dec!(4));
+        assert!(opp.total_cost_usdc > dec!(3));
     }
 
     #[test]

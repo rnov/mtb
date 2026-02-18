@@ -39,8 +39,10 @@ pub struct Opportunity {
     pub combined_ask_after_fees: Decimal,
     /// Expected profit per unit ($1.00 payout - combined_ask_after_fees)
     pub profit_per_unit: Decimal,
-    /// Suggested order size in USDC
-    pub suggested_size_usdc: Decimal,
+    /// Number of units (shares) to buy on each leg
+    pub units: Decimal,
+    /// Total USDC cost for all units on both legs including fees
+    pub total_cost_usdc: Decimal,
     /// Expected total profit in USDC
     pub expected_profit_usdc: Decimal,
     pub up_token_id: String,
