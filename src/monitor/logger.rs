@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::Serialize;
 use tracing::info;
 
@@ -15,6 +16,8 @@ use crate::strategy::Opportunity;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineStage {
+    /// Arb detection filter rejected (leg price / min notional / depth)
+    ArbRejected,
     /// Freshness guard rejected (high leg risk)
     FreshnessRejected,
     /// Risk manager rejected (position/exposure/kill switch)
@@ -23,6 +26,17 @@ pub enum PipelineStage {
     Executed,
     /// Execution attempted but failed
     ExecutionFailed,
+}
+
+/// Minimal record for arb-level filter rejections (no full Opportunity available).
+#[derive(Debug, Serialize)]
+pub struct ArbRejectionRecord<'a> {
+    pub recorded_at: DateTime<Utc>,
+    pub stage: PipelineStage,
+    pub market_id: &'a str,
+    pub up_ask: Decimal,
+    pub down_ask: Decimal,
+    pub reason: &'a str,
 }
 
 /// A complete trade record: opportunity + pipeline outcome + exchange context.
@@ -79,6 +93,12 @@ impl TradeLogger {
 
     /// Log a full trade record with pipeline context.
     pub fn log_record(&self, record: &TradeRecord) -> Result<()> {
+        let json = serde_json::to_string(record)?;
+        self.write_line(&json)
+    }
+
+    /// Log a minimal arb rejection (no full Opportunity; prices present but filter fired).
+    pub fn log_arb_rejection(&self, record: &ArbRejectionRecord) -> Result<()> {
         let json = serde_json::to_string(record)?;
         self.write_line(&json)
     }

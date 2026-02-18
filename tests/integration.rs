@@ -20,7 +20,7 @@ use rust_decimal_macros::dec;
 
 use mtb::config::types::{DiscoveryConfig, StrategyConfig};
 use mtb::market::MarketDiscovery;
-use mtb::strategy::{detect_arb, MarketSnapshot};
+use mtb::strategy::{detect_arb, ArbCheck, MarketSnapshot};
 
 /// Load private key from .env. Strips `0x` prefix if present. Panics if not set.
 fn load_private_key() -> String {
@@ -123,7 +123,7 @@ async fn pipeline_discover_fetch_detect() {
     };
 
     match detect_arb(&snapshot, &strategy_config) {
-        Some(opp) => {
+        ArbCheck::Found(opp) => {
             println!(
                 "  ARB FOUND: profit/unit={} expected_pnl=${} ({})",
                 opp.profit_per_unit, opp.expected_profit_usdc, opp.asset
@@ -134,7 +134,10 @@ async fn pipeline_discover_fetch_detect() {
             assert_eq!(opp.up_token_id, market.up_token_id);
             assert_eq!(opp.down_token_id, market.down_token_id);
         }
-        None => {
+        ArbCheck::Rejected(r) => {
+            println!("  arb filtered ({}): up={} down={}", r.reason, r.up_ask, r.down_ask);
+        }
+        ArbCheck::NoData => {
             println!("  no arb (combined ask after fees >= 1.0) — this is normal");
         }
     }

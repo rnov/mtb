@@ -3,14 +3,21 @@ use tracing::{debug, info};
 
 use crate::config::types::StrategyConfig;
 use crate::strategy::fees;
-use crate::strategy::types::{MarketSnapshot, Opportunity, OpportunityKind};
+use crate::strategy::types::{ArbCheck, ArbRejection, MarketSnapshot, Opportunity, OpportunityKind};
 
 /// Pure arb strategy: detect when up_ask + down_ask < 1.0 after fees.
 ///
 /// This function is pure computation — no IO, no async. Fully unit-testable.
-pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<Opportunity> {
-    let up_ask = snapshot.up_best_ask?;
-    let down_ask = snapshot.down_best_ask?;
+///
+/// Returns:
+/// - `ArbCheck::NoData` — prices missing or combined cost ≥ $1 (skip silently, too noisy)
+/// - `ArbCheck::Rejected` — strategy filter fired (leg price / notional / depth); logged
+/// - `ArbCheck::Found` — opportunity passes all filters
+pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> ArbCheck {
+    let (up_ask, down_ask) = match (snapshot.up_best_ask, snapshot.down_best_ask) {
+        (Some(u), Some(d)) => (u, d),
+        _ => return ArbCheck::NoData,
+    };
 
     // Sanity: prices must be in (0, 1)
     if up_ask <= Decimal::ZERO
@@ -24,7 +31,7 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
             down_ask = %down_ask,
             "skipping: prices out of range"
         );
-        return None;
+        return ArbCheck::NoData;
     }
 
     // Cap individual leg prices to limit directional exposure on partial fill.
@@ -38,7 +45,12 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
             max = %config.max_leg_price,
             "skipping: leg price exceeds max"
         );
-        return None;
+        return ArbCheck::Rejected(ArbRejection {
+            market_id: snapshot.market.market_id.clone(),
+            up_ask,
+            down_ask,
+            reason: "leg_price_exceeds_max",
+        });
     }
 
     let (combined_after_fees, up_fee, down_fee) = fees::combined_cost_after_fees(up_ask, down_ask);
@@ -52,7 +64,7 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
             combined_after_fees = %combined_after_fees,
             "no arb: combined cost >= 1.0"
         );
-        return None;
+        return ArbCheck::NoData;
     }
 
     if profit_per_unit < config.min_arb_profit {
@@ -62,7 +74,7 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
             min = %config.min_arb_profit,
             "arb below threshold"
         );
-        return None;
+        return ArbCheck::NoData;
     }
 
     // Units are floored to integers (CLOB requires maker_amount ≤ 2dp).
@@ -85,7 +97,12 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
             size_min = %size_min,
             "skipping: budget yields too few units to clear CLOB $1 minimum per leg"
         );
-        return None;
+        return ArbCheck::Rejected(ArbRejection {
+            market_id: snapshot.market.market_id.clone(),
+            up_ask,
+            down_ask,
+            reason: "min_notional",
+        });
     }
 
     // 8c: Executable size check.
@@ -104,7 +121,12 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
             size_min = %size_min,
             "skipping: book depth too thin to fill minimum order on both legs"
         );
-        return None;
+        return ArbCheck::Rejected(ArbRejection {
+            market_id: snapshot.market.market_id.clone(),
+            up_ask,
+            down_ask,
+            reason: "depth_too_thin",
+        });
     }
 
     // Cap units to what the book can actually fill, then derive total cost.
@@ -140,7 +162,7 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
         "ARB DETECTED"
     );
 
-    Some(opp)
+    ArbCheck::Found(Box::new(opp))
 }
 
 #[cfg(test)]
@@ -211,10 +233,23 @@ mod tests {
         }
     }
 
+    /// Extract opportunity from ArbCheck::Found, or None.
+    fn found(result: ArbCheck) -> Option<Opportunity> {
+        match result {
+            ArbCheck::Found(opp) => Some(*opp),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the result is ArbCheck::Rejected.
+    fn is_rejected(result: ArbCheck) -> bool {
+        matches!(result, ArbCheck::Rejected(_))
+    }
+
     #[test]
     fn detects_arb_opportunity() {
         let snap = snapshot(Some(dec!(0.45)), Some(dec!(0.45)));
-        let opp = detect_arb(&snap, &test_config());
+        let opp = found(detect_arb(&snap, &test_config()));
         assert!(opp.is_some());
         let opp = opp.unwrap();
         assert!(opp.profit_per_unit > Decimal::ZERO);
@@ -224,13 +259,13 @@ mod tests {
     #[test]
     fn no_arb_when_prices_too_high() {
         let snap = snapshot(Some(dec!(0.55)), Some(dec!(0.55)));
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(found(detect_arb(&snap, &test_config())).is_none());
     }
 
     #[test]
     fn no_arb_with_missing_ask() {
         let snap = snapshot(Some(dec!(0.45)), None);
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(found(detect_arb(&snap, &test_config())).is_none());
     }
 
     #[test]
@@ -241,21 +276,21 @@ mod tests {
         };
         // Small arb that's below the 10% threshold
         let snap = snapshot(Some(dec!(0.48)), Some(dec!(0.48)));
-        assert!(detect_arb(&snap, &config).is_none());
+        assert!(found(detect_arb(&snap, &config)).is_none());
     }
 
     #[test]
     fn no_arb_when_leg_price_too_high() {
         // up=0.05, down=0.92 — valid arb but down exceeds max_leg_price=0.90
         let snap = snapshot(Some(dec!(0.05)), Some(dec!(0.92)));
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(is_rejected(detect_arb(&snap, &test_config())));
     }
 
     #[test]
     fn arb_within_leg_price_limit() {
         // up=0.40, down=0.50 — both within max_leg_price=0.90
         let snap = snapshot(Some(dec!(0.40)), Some(dec!(0.50)));
-        assert!(detect_arb(&snap, &test_config()).is_some());
+        assert!(found(detect_arb(&snap, &test_config())).is_some());
     }
 
     #[test]
@@ -265,7 +300,7 @@ mod tests {
         // min_shares_up = ceil(1/0.30) = 4
         // size_min = 4, units=3 < 4 → skip
         let snap = snapshot(Some(dec!(0.30)), Some(dec!(0.66)));
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(is_rejected(detect_arb(&snap, &test_config())));
     }
 
     #[test]
@@ -276,7 +311,7 @@ mod tests {
         // min_shares_down = ceil(1/0.49) = 3
         // size_min = 3, units=3 >= 3 → accept
         let snap = snapshot(Some(dec!(0.47)), Some(dec!(0.49)));
-        assert!(detect_arb(&snap, &test_config()).is_some());
+        assert!(found(detect_arb(&snap, &test_config())).is_some());
     }
 
     #[test]
@@ -288,7 +323,7 @@ mod tests {
             vec![],                        // UP: no depth
             vec![(dec!(0.49), dec!(100))], // DOWN: liquid
         );
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(is_rejected(detect_arb(&snap, &test_config())));
     }
 
     #[test]
@@ -301,7 +336,7 @@ mod tests {
             vec![(dec!(0.47), dec!(2))],   // UP: only 2 shares
             vec![(dec!(0.49), dec!(100))], // DOWN: liquid
         );
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(is_rejected(detect_arb(&snap, &test_config())));
     }
 
     #[test]
@@ -322,7 +357,7 @@ mod tests {
             vec![(dec!(0.45), dec!(4))],  // UP: 4 shares
             vec![(dec!(0.45), dec!(6))],  // DOWN: 6 shares
         );
-        let opp = detect_arb(&snap, &config);
+        let opp = found(detect_arb(&snap, &config));
         assert!(opp.is_some());
         let opp = opp.unwrap();
         // suggested_size = 4 * combined_after_fees ≈ 4 * 0.918 = 3.672
@@ -333,9 +368,24 @@ mod tests {
     #[test]
     fn rejects_invalid_prices() {
         let snap = snapshot(Some(dec!(0.00)), Some(dec!(0.45)));
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(found(detect_arb(&snap, &test_config())).is_none());
 
         let snap = snapshot(Some(dec!(1.00)), Some(dec!(0.45)));
-        assert!(detect_arb(&snap, &test_config()).is_none());
+        assert!(found(detect_arb(&snap, &test_config())).is_none());
+    }
+
+    #[test]
+    fn rejection_carries_market_id_and_prices() {
+        // Verify the rejection record has the right data for logging.
+        let snap = snapshot(Some(dec!(0.05)), Some(dec!(0.92)));
+        match detect_arb(&snap, &test_config()) {
+            ArbCheck::Rejected(r) => {
+                assert_eq!(r.market_id, "test-market-1");
+                assert_eq!(r.up_ask, dec!(0.05));
+                assert_eq!(r.down_ask, dec!(0.92));
+                assert_eq!(r.reason, "leg_price_exceeds_max");
+            }
+            _ => panic!("expected ArbCheck::Rejected"),
+        }
     }
 }

@@ -23,9 +23,9 @@ use feed::{
     PriceState,
 };
 use market::MarketDiscovery;
-use monitor::{PipelineStage, TradeLogger, TradeRecord};
+use monitor::{ArbRejectionRecord, PipelineStage, TradeLogger, TradeRecord};
 use risk::RiskManager;
-use strategy::{detect_arb, validate_freshness, MarketSnapshot};
+use strategy::{detect_arb, validate_freshness, ArbCheck, MarketSnapshot};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -300,7 +300,22 @@ async fn main() -> anyhow::Result<()> {
                             let arb_result = detect_arb(&snapshot, &app_config.strategy);
                             let arb_us = arb_start.elapsed().as_micros();
 
-                            if let Some(opportunity) = arb_result {
+                            // Log filter rejections (leg price / min notional / depth) to trades.jsonl
+                            if let ArbCheck::Rejected(ref rejection) = arb_result {
+                                let record = ArbRejectionRecord {
+                                    recorded_at: Utc::now(),
+                                    stage: PipelineStage::ArbRejected,
+                                    market_id: &rejection.market_id,
+                                    up_ask: rejection.up_ask,
+                                    down_ask: rejection.down_ask,
+                                    reason: rejection.reason,
+                                };
+                                if let Err(e) = logger.log_arb_rejection(&record) {
+                                    error!(error = %e, "failed to write arb rejection log");
+                                }
+                            }
+
+                            if let ArbCheck::Found(opportunity) = arb_result {
                                 // Snapshot exchange prices at decision time (for logging)
                                 let max_age = Duration::from_millis(app_config.strategy.max_price_age_ms);
                                 let exchange_snapshot = price_state.snapshot_asset(&opportunity.asset, max_age);

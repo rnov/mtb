@@ -4,6 +4,25 @@ use serde::Serialize;
 
 use crate::market::MarketPair;
 
+/// Return type of arb detection — distinguishes "no arb" from "arb filtered".
+pub enum ArbCheck {
+    /// Prices missing, invalid, or combined cost ≥ $1 — not an arb, skip silently.
+    NoData,
+    /// Prices present and combined cost < $1, but a filter rejected it — log this.
+    Rejected(ArbRejection),
+    /// Arb opportunity passes all filters.
+    Found(Box<Opportunity>),
+}
+
+/// A filter rejection from `detect_arb` — logged to trades.jsonl.
+#[derive(Debug, Clone)]
+pub struct ArbRejection {
+    pub market_id: String,
+    pub up_ask: Decimal,
+    pub down_ask: Decimal,
+    pub reason: &'static str,
+}
+
 /// A snapshot of the current state of a market, used as input to strategies.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
