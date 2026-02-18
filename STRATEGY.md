@@ -52,7 +52,18 @@ All in `src/strategy/arb.rs`, executed in order on every orderbook tick.
 #### Filter 1 — Price sanity
 Both `up_ask` and `down_ask` must be in `(0, 1)`. Zero or one is nonsensical for a parity token.
 
-#### Filter 2 — Max leg price
+#### Filter 2 — Minimum profit
+```
+profit_per_unit = 1.0 − (up_ask + down_ask + fees)
+skip if profit_per_unit ≤ 0 or profit_per_unit < min_arb_profit
+```
+Fee model: `fee = min(price, 1 − price) × 2%` per leg (Polymarket taker rate, symmetric around 0.5).
+
+This runs **before** the leg price check. Only markets with a real arb (combined < $1 after fees, above the profit threshold) reach filters 3–5. This ensures every rejection logged to `trades.jsonl` was a genuine arb, not noise.
+
+Config: `strategy.min_arb_profit` (default 0.5%)
+
+#### Filter 3 — Max leg price
 ```
 if up_ask > max_leg_price || down_ask > max_leg_price → skip
 ```
@@ -60,15 +71,6 @@ Caps directional exposure on partial fill. If one side fails to fill and you're 
 
 Config: `strategy.max_leg_price`
 Use `scripts/exposure_calculator.py` to calibrate (see Config Calibration below).
-
-#### Filter 3 — Minimum profit
-```
-profit_per_unit = 1.0 − (up_ask + down_ask + fees)
-skip if profit_per_unit < min_arb_profit
-```
-Fee model: `fee = min(price, 1 − price) × 2%` per leg (Polymarket taker rate, symmetric around 0.5).
-
-Config: `strategy.min_arb_profit` (default 0.5%)
 
 #### Filter 4 — Min notional (Step 8a)
 The CLOB rejects any individual order below `min_order_usdc` ($1.00). Minimum shares per leg:
@@ -81,6 +83,21 @@ budget_units    = floor(max_order_size_usdc / combined_after_fees)
 skip if budget_units < size_min
 ```
 Example: `up=$0.30` → need ≥ 4 units (4 × $0.30 = $1.20). With `budget=$3` and combined ~$0.96 → `budget_units=3` < `size_min=4` → skip.
+
+Example: `up=$0.30`, `down=$0.66`, `budget=$3`:
+```
+fee_up          = min(0.30, 0.70) × 2% = $0.006
+fee_down        = min(0.66, 0.34) × 2% = $0.0068
+combined        = 0.30 + 0.006 + 0.66 + 0.0068 = $0.9728
+
+budget_units    = floor($3 / $0.9728) = 3
+min_shares_up   = ceil($1 / $0.30)   = 4   ← the binding constraint
+min_shares_down = ceil($1 / $0.66)   = 2
+size_min        = max(4, 2) = 4
+
+budget_units=3 < size_min=4 → skip
+```
+At $0.30/share, 3 units would cost only $0.90 — below the $1 CLOB minimum.
 
 Config: `strategy.min_order_usdc`, `strategy.max_order_size_usdc`
 
@@ -150,8 +167,8 @@ Kill switch halts trading but not the process. Resume via Telegram `/resume` or 
 
 ```
 1. Sanity: 0.47 and 0.49 both in (0, 1) ✓
-2. Leg cap: 0.47 ≤ 0.50 and 0.49 ≤ 0.50 ✓
-3. Profit: 1 − (0.47 + 0.49 + 0.0094 + 0.0098) = 1 − 0.9792 = 0.0208 → 2.08% > 0.5% ✓
+2. Profit: 1 − (0.47 + 0.49 + 0.0094 + 0.0098) = 1 − 0.9792 = 0.0208 → 2.08% > 0.5% ✓
+3. Leg cap: 0.47 ≤ 0.50 and 0.49 ≤ 0.50 ✓
 4. Min notional:
      min_shares_up   = ceil(1/0.47) = 3  →  3 × $0.47 = $1.41 ✓
      min_shares_down = ceil(1/0.49) = 3  →  3 × $0.49 = $1.47 ✓
