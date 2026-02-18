@@ -18,6 +18,7 @@ pub enum ArbCheck {
 #[derive(Debug, Clone)]
 pub struct ArbRejection {
     pub market_id: String,
+    pub asset: String,
     pub up_ask: Decimal,
     pub down_ask: Decimal,
     pub reason: &'static str,

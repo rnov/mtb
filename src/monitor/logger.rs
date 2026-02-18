@@ -34,9 +34,11 @@ pub struct ArbRejectionRecord<'a> {
     pub recorded_at: DateTime<Utc>,
     pub stage: PipelineStage,
     pub market_id: &'a str,
+    pub asset: &'a str,
     pub up_ask: Decimal,
     pub down_ask: Decimal,
     pub reason: &'a str,
+    pub exchange_snapshot: ExchangeSnapshot,
 }
 
 /// A complete trade record: opportunity + pipeline outcome + exchange context.

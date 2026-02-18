@@ -77,6 +77,7 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> ArbChec
         );
         return ArbCheck::Rejected(ArbRejection {
             market_id: snapshot.market.market_id.clone(),
+            asset: snapshot.market.asset.clone(),
             up_ask,
             down_ask,
             reason: "leg_price_exceeds_max",
@@ -105,6 +106,7 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> ArbChec
         );
         return ArbCheck::Rejected(ArbRejection {
             market_id: snapshot.market.market_id.clone(),
+            asset: snapshot.market.asset.clone(),
             up_ask,
             down_ask,
             reason: "min_notional",
@@ -129,6 +131,7 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> ArbChec
         );
         return ArbCheck::Rejected(ArbRejection {
             market_id: snapshot.market.market_id.clone(),
+            asset: snapshot.market.asset.clone(),
             up_ask,
             down_ask,
             reason: "depth_too_thin",

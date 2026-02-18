@@ -302,13 +302,17 @@ async fn main() -> anyhow::Result<()> {
 
                             // Log filter rejections (leg price / min notional / depth) to trades.jsonl
                             if let ArbCheck::Rejected(ref rejection) = arb_result {
+                                let max_age = Duration::from_millis(app_config.strategy.max_price_age_ms);
+                                let exchange_snapshot = price_state.snapshot_asset(&rejection.asset, max_age);
                                 let record = ArbRejectionRecord {
                                     recorded_at: Utc::now(),
                                     stage: PipelineStage::ArbRejected,
                                     market_id: &rejection.market_id,
+                                    asset: &rejection.asset,
                                     up_ask: rejection.up_ask,
                                     down_ask: rejection.down_ask,
                                     reason: rejection.reason,
+                                    exchange_snapshot,
                                 };
                                 if let Err(e) = logger.log_arb_rejection(&record) {
                                     error!(error = %e, "failed to write arb rejection log");

@@ -82,6 +82,10 @@ def check_arb_rejected(rec: dict, cfg: dict) -> list[str]:
     reason = rec.get("reason", "")
     mlp = cfg["max_leg_price"]
 
+    # Every arb_rejected record should have an asset field (added after initial release).
+    if not rec.get("asset"):
+        anomalies.append("missing asset field (old record format)")
+
     # Fundamental check: every arb_rejected record must have been a real arb.
     # If combined (raw, before fees) >= 1.0 it was never profitable — the record
     # should not exist at all (bug: filter fired before profitability check).
