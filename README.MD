@@ -59,7 +59,7 @@ To switch to live trading, change `mode = "live"` in `config.toml`. Requires fun
 | Section | Key fields |
 |---------|-----------|
 | `mode` | `"dry_run"` or `"live"` |
-| `[strategy]` | `min_arb_profit`, `assets`, `max_order_size_usdc`, `min_fresh_sources`, `max_price_age_ms`, `max_divergence_pct` |
+| `[strategy]` | `min_arb_profit`, `assets`, `max_order_size_usdc`, `max_leg_price`, `min_order_usdc`, `min_fresh_sources`, `max_price_age_ms`, `max_divergence_pct` |
 | `[risk]` | `max_exposure_usdc`, `max_daily_loss_usdc`, `max_consecutive_failures`, `feed_disconnect_timeout_secs` |
 | `[discovery]` | `poll_interval_secs`, `assets` |
 | `[telegram]` | `chat_id` |
@@ -190,7 +190,7 @@ src/
 
 ## Testing
 
-### Unit Tests (61)
+### Unit Tests (66)
 
 Fast, no network. Run anytime:
 
@@ -286,97 +286,14 @@ Uses MetaMask with `SignatureType::GnosisSafe` (browser wallet / Type 2). The SD
 - GnosisSafe trades are gasless (Polymarket relays)
 - USDC allowances must be set (triggered by first manual trade on Polymarket UI)
 
-## Arb Detection Strategy
+## Strategy
 
-Detection moves from **theoretical** to **executable** in four layers:
-
-### Layer 1 — Price check (always active)
-```
-up_ask + down_ask < 1 − fees
-```
-Basic parity condition. Necessary but not sufficient — doesn't say whether the book can actually fill.
-
-### Layer 2 — Min-notional filter (Step 8a)
-The CLOB rejects any order below $1. Minimum shares needed per leg:
-```
-min_shares_up   = ceil(1 / up_ask)
-min_shares_down = ceil(1 / down_ask)
-units           = floor(budget / combined_cost)
-
-skip if units < max(min_shares_up, min_shares_down)
-```
-Example: up=$0.30 → need ≥ 4 units (4 × $0.30 = $1.20). With budget $3 and combined ~$0.96 → 3 units available < 4 required → skip.
-
-### Layer 3 — Executable size check (Step 8c, requires 8b)
-The ask price might exist but with only 1 share available. We need enough depth on both sides:
-```
-executable_up   = shares available at best_ask_up
-executable_down = shares available at best_ask_down
-size_cap = min(executable_up, executable_down)
-size_min = max(min_shares_up, min_shares_down)
-
-skip if size_cap < size_min
-```
-Prevents sending FOK orders into books too thin to fill.
-
-### Layer 4 — VWAP arb preservation (Step 8d, requires 8b)
-If we need to scale across multiple price levels, the average fill price (VWAP) may exceed the best ask and erase the edge:
-```
-vwap_up(size_cap) + vwap_down(size_cap) < 1 − fees − buffer
-
-skip if this fails
-```
-Ensures the arb edge survives at the actual executable size.
-
-### Why this matters
-| Check | Problem it solves |
-|-------|------------------|
-| Price check | Confirms arb exists in theory |
-| Min-notional | Avoids CLOB $1/order rejections |
-| Executable size | Avoids FOK kills from thin books |
-| VWAP | Avoids eroding edge by scaling into depth |
-
-## Execution Semantics
-
-### Order Flow
-
-Each arb opportunity submits two **FOK (fill-or-kill)** orders concurrently via individual `POST /order` calls (`tokio::join!`):
-1. Buy Up token at the ask price
-2. Buy Down token at the ask price
-
-Both orders use **equal share counts** (units = budget / combined_cost) so every Up token is paired with a Down token. The CLOB processes them independently — they are **not atomic**.
-
-### Order Status
-
-The CLOB returns a `status` field per order. `success: true` only means the order was accepted, not filled.
-
-| Status | Meaning | Action |
-|--------|---------|--------|
-| `Matched` | Filled — tokens exchanged, USDC spent | Only true "success" |
-| `Canceled` | FOK killed — no matching liquidity at our price | Normal, no cost, book moved |
-| `Unmatched` | Could not match | Normal, no cost |
-| `Live` | Order resting on book | **Unexpected for FOK** — warns, counts as failure |
-| `Delayed` | Order queued by CLOB | Unexpected — warns, counts as failure |
-
-### Outcome Matrix
-
-| Up | Down | Result |
-|----|------|--------|
-| Matched | Matched | Arb filled — guaranteed profit at resolution |
-| Matched | Not matched | **Partial fill** — kill switch triggers immediately, operator must review |
-| Not matched | Matched | **Partial fill** — kill switch triggers immediately, operator must review |
-| Not matched | Not matched | No fill — normal, no cost, bot continues |
-
-### Safety Guards
-
-| Guard | Config | Effect |
-|-------|--------|--------|
-| Max leg price | `max_leg_price = 0.90` | Rejects arbs where either side > $0.90 — limits directional exposure on partial fill |
-| Partial fill kill switch | Automatic | Halts all trading on first partial fill — `/resume` to restart |
-| Exposure cap | `max_exposure_usdc` | Cumulative USDC spent limit per session |
-| Consecutive failures | `max_consecutive_failures` | Kill switch after N failed orders in a row |
-| Feed disconnect | `feed_disconnect_timeout_secs` | Halts trading when orderbook WS disconnects |
-| Freshness guard | `min_fresh_sources`, `max_price_age_ms`, `max_divergence_pct` | Skips arbs when exchange prices are stale or divergent (high leg risk) |
+See [STRATEGY.md](STRATEGY.md) for the full operational reference:
+- Step-by-step strategy logic (discovery → feeds → filters → sizing → execution → risk)
+- All 5 arb detection filters with math and examples
+- Worked example end-to-end
+- Config calibration guide (`scripts/exposure_calculator.py`)
+- Decision log (key design choices with rationale)
 
 ## Key Design Decisions
 
