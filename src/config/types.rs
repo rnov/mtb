@@ -44,6 +44,9 @@ pub struct StrategyConfig {
     /// Maximum price for either leg — caps directional exposure on partial fill
     #[serde(default = "default_max_leg_price")]
     pub max_leg_price: Decimal,
+    /// Minimum USDC value per order — CLOB rejects orders below this threshold
+    #[serde(default = "default_min_order_usdc")]
+    pub min_order_usdc: Decimal,
 }
 
 fn default_min_fresh_sources() -> usize {
@@ -60,6 +63,10 @@ fn default_max_divergence_pct() -> Decimal {
 
 fn default_max_leg_price() -> Decimal {
     Decimal::new(90, 2) // 0.90
+}
+
+fn default_min_order_usdc() -> Decimal {
+    Decimal::ONE // $1.00 — CLOB minimum per order
 }
 
 #[derive(Debug, Clone, Deserialize)]

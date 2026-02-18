@@ -66,9 +66,30 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> Option<
     }
 
     // Size: limited by max_order_size_usdc. Each unit costs combined_after_fees in USDC.
-    let max_units = config.max_order_size_usdc / combined_after_fees;
+    // Units are floored to integers (CLOB requires maker_amount ≤ 2dp).
+    let units = (config.max_order_size_usdc / combined_after_fees).floor();
+
+    // CLOB enforces a minimum notional per order (default $1).
+    // Each leg is an independent order, so both must individually clear the minimum.
+    // min_shares = ceil(min_order_usdc / leg_price) — fewest shares where cost ≥ $1.
+    let min_shares_up = (config.min_order_usdc / up_ask).ceil();
+    let min_shares_down = (config.min_order_usdc / down_ask).ceil();
+    let size_min = min_shares_up.max(min_shares_down);
+
+    if units < size_min {
+        debug!(
+            market_id = %snapshot.market.market_id,
+            up_ask = %up_ask,
+            down_ask = %down_ask,
+            units = %units,
+            size_min = %size_min,
+            "skipping: budget yields too few units to clear CLOB $1 minimum per leg"
+        );
+        return None;
+    }
+
     let suggested_size = config.max_order_size_usdc;
-    let expected_profit = max_units * profit_per_unit;
+    let expected_profit = units * profit_per_unit;
 
     let opp = Opportunity {
         market_id: snapshot.market.market_id.clone(),
@@ -112,11 +133,12 @@ mod tests {
         StrategyConfig {
             min_arb_profit: dec!(0.001),
             assets: vec!["BTC".into()],
-            max_order_size_usdc: dec!(100),
+            max_order_size_usdc: dec!(3),
             min_fresh_sources: 2,
             max_price_age_ms: 2000,
             max_divergence_pct: dec!(0.5),
             max_leg_price: dec!(0.90),
+            min_order_usdc: dec!(1.0),
         }
     }
 
@@ -189,6 +211,27 @@ mod tests {
     fn arb_within_leg_price_limit() {
         // up=0.40, down=0.50 — both within max_leg_price=0.90
         let snap = snapshot(Some(dec!(0.40)), Some(dec!(0.50)));
+        assert!(detect_arb(&snap, &test_config()).is_some());
+    }
+
+    #[test]
+    fn rejects_when_cheap_leg_below_min_notional() {
+        // up=0.30, down=0.66, budget=$3
+        // units = floor(3 / combined_after_fees) = floor(3/0.9728) = 3
+        // min_shares_up = ceil(1/0.30) = 4
+        // size_min = 4, units=3 < 4 → skip
+        let snap = snapshot(Some(dec!(0.30)), Some(dec!(0.66)));
+        assert!(detect_arb(&snap, &test_config()).is_none());
+    }
+
+    #[test]
+    fn accepts_when_both_legs_clear_min_notional() {
+        // up=0.47, down=0.49, budget=$3
+        // units = floor(3/0.9786) = 3 (approx, after fees)
+        // min_shares_up = ceil(1/0.47) = 3
+        // min_shares_down = ceil(1/0.49) = 3
+        // size_min = 3, units=3 >= 3 → accept
+        let snap = snapshot(Some(dec!(0.47)), Some(dec!(0.49)));
         assert!(detect_arb(&snap, &test_config()).is_some());
     }
 

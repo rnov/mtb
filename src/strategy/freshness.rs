@@ -121,6 +121,7 @@ mod tests {
             max_price_age_ms: 2000,
             max_divergence_pct: dec!(0.5),
             max_leg_price: dec!(0.90),
+            min_order_usdc: dec!(1.0),
         }
     }
 
