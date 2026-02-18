@@ -1,13 +1,14 @@
 use std::str::FromStr;
 
 use futures::StreamExt;
+use rust_decimal::Decimal;
 use polymarket_client_sdk::clob::ws::Client as WsClient;
 use polymarket_client_sdk::types::U256;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 use crate::error::{Error, Result};
-use crate::feed::types::{BestBidAsk, FeedEvent};
+use crate::feed::types::{BestBidAsk, FeedEvent, MAX_ASK_DEPTH};
 
 /// Subscribes to CLOB WebSocket orderbook data and publishes BestBidAsk updates.
 pub struct OrderbookFeed {
@@ -72,10 +73,21 @@ async fn run_orderbook_stream(
                 // The CLOB WS sorts asks descending (highest first), so best ask is last.
                 let best_ask = book.asks.last().map(|level| level.price);
 
+                // Collect ask-side depth levels sorted ascending (cheapest first).
+                // WS gives asks descending, so we reverse. Cap at MAX_ASK_DEPTH.
+                let ask_levels: Vec<(Decimal, Decimal)> = book
+                    .asks
+                    .iter()
+                    .rev()
+                    .take(MAX_ASK_DEPTH)
+                    .map(|level| (level.price, level.size))
+                    .collect();
+
                 let update = BestBidAsk {
                     token_id: asset_id_str.clone(),
                     best_bid,
                     best_ask,
+                    ask_levels,
                     timestamp: book.timestamp,
                 };
 

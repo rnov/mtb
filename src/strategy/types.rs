@@ -13,6 +13,10 @@ pub struct MarketSnapshot {
     pub up_best_ask: Option<Decimal>,
     pub down_best_bid: Option<Decimal>,
     pub down_best_ask: Option<Decimal>,
+    /// Ask-side depth for the UP token: (price, size) sorted ascending (cheapest first).
+    pub up_ask_levels: Vec<(Decimal, Decimal)>,
+    /// Ask-side depth for the DOWN token: (price, size) sorted ascending (cheapest first).
+    pub down_ask_levels: Vec<(Decimal, Decimal)>,
     pub timestamp: DateTime<Utc>,
 }
 

@@ -106,6 +106,8 @@ async fn pipeline_discover_fetch_detect() {
         up_best_ask,
         down_best_bid,
         down_best_ask,
+        up_ask_levels: vec![],
+        down_ask_levels: vec![],
         timestamp: Utc::now(),
     };
 

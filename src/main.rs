@@ -201,6 +201,8 @@ async fn main() -> anyhow::Result<()> {
     // Latest best bid/ask per token
     let mut best_asks: HashMap<String, Decimal> = HashMap::new();
     let mut best_bids: HashMap<String, Decimal> = HashMap::new();
+    // Latest ask-side depth levels per token (price, size), sorted ascending
+    let mut ask_levels_map: HashMap<String, Vec<(Decimal, Decimal)>> = HashMap::new();
 
     // Price state: latest Binance prices per symbol
     let mut price_state = PriceState::new();
@@ -222,12 +224,15 @@ async fn main() -> anyhow::Result<()> {
                         // Record feed activity for staleness tracking
                         risk_manager.record_feed_activity();
 
-                        // Update latest prices
+                        // Update latest prices and depth
                         if let Some(bid) = update.best_bid {
                             best_bids.insert(update.token_id.clone(), bid);
                         }
                         if let Some(ask) = update.best_ask {
                             best_asks.insert(update.token_id.clone(), ask);
+                        }
+                        if !update.ask_levels.is_empty() {
+                            ask_levels_map.insert(update.token_id.clone(), update.ask_levels);
                         }
 
                         // Find which market this token belongs to
@@ -260,12 +265,23 @@ async fn main() -> anyhow::Result<()> {
                                 (None, None) => None,
                             };
 
+                            let up_ask_levels = ask_levels_map
+                                .get(&m.up_token_id)
+                                .cloned()
+                                .unwrap_or_default();
+                            let down_ask_levels = ask_levels_map
+                                .get(&m.down_token_id)
+                                .cloned()
+                                .unwrap_or_default();
+
                             let snapshot = MarketSnapshot {
                                 market: m.clone(),
                                 up_best_bid: raw_up_bid,
                                 up_best_ask: effective_up_ask,
                                 down_best_bid: raw_down_bid,
                                 down_best_ask: effective_down_ask,
+                                up_ask_levels,
+                                down_ask_levels,
                                 timestamp: Utc::now(),
                             };
 

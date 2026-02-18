@@ -1,6 +1,6 @@
 use rust_decimal::Decimal;
 
-/// Best bid/ask for a single token.
+/// Best bid/ask for a single token, plus ask-side depth levels.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct BestBidAsk {
@@ -8,8 +8,14 @@ pub struct BestBidAsk {
     pub token_id: String,
     pub best_bid: Option<Decimal>,
     pub best_ask: Option<Decimal>,
+    /// Ask-side depth levels: (price, size), sorted ascending (cheapest first).
+    /// Capped at MAX_ASK_DEPTH levels. Used for executable size and VWAP checks.
+    pub ask_levels: Vec<(Decimal, Decimal)>,
     pub timestamp: i64,
 }
+
+/// Maximum number of ask-side depth levels to carry through the pipeline.
+pub const MAX_ASK_DEPTH: usize = 10;
 
 /// Events emitted by the unified feed manager.
 #[derive(Debug, Clone)]

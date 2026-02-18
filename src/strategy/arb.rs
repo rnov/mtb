@@ -163,6 +163,8 @@ mod tests {
             up_best_ask: up_ask,
             down_best_bid: None,
             down_best_ask: down_ask,
+            up_ask_levels: vec![],
+            down_ask_levels: vec![],
             timestamp: Utc::now(),
         }
     }
