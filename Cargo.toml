@@ -2,6 +2,7 @@
 name = "mtb"
 version = "0.1.0"
 edition = "2021"
+default-run = "mtb"
 
 [dependencies]
 polymarket-client-sdk = { git = "https://github.com/Polymarket/rs-clob-client", features = [
