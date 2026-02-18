@@ -82,6 +82,17 @@ def check_arb_rejected(rec: dict, cfg: dict) -> list[str]:
     reason = rec.get("reason", "")
     mlp = cfg["max_leg_price"]
 
+    # Fundamental check: every arb_rejected record must have been a real arb.
+    # If combined (raw, before fees) >= 1.0 it was never profitable — the record
+    # should not exist at all (bug: filter fired before profitability check).
+    caf = combined_after_fees(up, dn)
+    if caf >= Decimal("1"):
+        anomalies.append(
+            f"NOT AN ARB: up={up} down={dn} combined_after_fees={caf} >= 1.00 "
+            f"(reason={reason}) — this record should never have been logged"
+        )
+        return anomalies  # further checks are meaningless
+
     if reason == "leg_price_exceeds_max":
         # At least one leg must be > max_leg_price
         if up <= mlp and dn <= mlp:

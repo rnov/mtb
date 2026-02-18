@@ -34,25 +34,9 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> ArbChec
         return ArbCheck::NoData;
     }
 
-    // Cap individual leg prices to limit directional exposure on partial fill.
-    // E.g., up=0.06 / down=0.93 is a valid arb but if down fails to fill,
-    // you hold a $0.06 token that's almost certainly worthless.
-    if up_ask > config.max_leg_price || down_ask > config.max_leg_price {
-        debug!(
-            market_id = %snapshot.market.market_id,
-            up_ask = %up_ask,
-            down_ask = %down_ask,
-            max = %config.max_leg_price,
-            "skipping: leg price exceeds max"
-        );
-        return ArbCheck::Rejected(ArbRejection {
-            market_id: snapshot.market.market_id.clone(),
-            up_ask,
-            down_ask,
-            reason: "leg_price_exceeds_max",
-        });
-    }
-
+    // Profitability check — must confirm a real arb exists before any strategy
+    // filter can produce a Rejected record. Anything that returns NoData below
+    // was never an arb to begin with and is not worth logging.
     let (combined_after_fees, up_fee, down_fee) = fees::combined_cost_after_fees(up_ask, down_ask);
     let combined_raw = up_ask + down_ask;
     let profit_per_unit = Decimal::ONE - combined_after_fees;
@@ -75,6 +59,28 @@ pub fn detect_arb(snapshot: &MarketSnapshot, config: &StrategyConfig) -> ArbChec
             "arb below threshold"
         );
         return ArbCheck::NoData;
+    }
+
+    // From here on: a real arb exists (combined < $1, profit ≥ threshold).
+    // Any return below is a strategy filter decision — log it as Rejected.
+
+    // Cap individual leg prices to limit directional exposure on partial fill.
+    // E.g., up=0.06 / down=0.93 combined=$0.99 is a real arb but if down fails
+    // to fill, you hold a $0.06 token that's almost certainly worthless.
+    if up_ask > config.max_leg_price || down_ask > config.max_leg_price {
+        debug!(
+            market_id = %snapshot.market.market_id,
+            up_ask = %up_ask,
+            down_ask = %down_ask,
+            max = %config.max_leg_price,
+            "skipping: leg price exceeds max"
+        );
+        return ArbCheck::Rejected(ArbRejection {
+            market_id: snapshot.market.market_id.clone(),
+            up_ask,
+            down_ask,
+            reason: "leg_price_exceeds_max",
+        });
     }
 
     // Units are floored to integers (CLOB requires maker_amount ≤ 2dp).
