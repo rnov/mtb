@@ -156,14 +156,32 @@ larger edge / smaller size.
 | Source tiering | Exchange tier (fast) vs Resolution tier (slow) | Exchanges assess leg risk; Chainlink tracks resolution separately |
 
 ## Deployment
-- **VPS**: Amsterdam (Hetzner to start, ~€10/month). Best latency tradeoff: ~5-10ms to
-  Polymarket CLOB (London), ~10-20ms to Polygon RPC (Frankfurt), ~100-150ms to Binance (Tokyo).
+- **CLOB location**: AWS **eu-west-2 (London)** primary, eu-west-1 (Ireland) backup.
+  Confirmed in Polymarket's own docs: https://docs.polymarket.com/developers/CLOB/geoblock.
+  clob.polymarket.com (104.18.x.x) is Cloudflare anycast — it terminates TLS at the nearest
+  edge PoP but proxies all requests to the London backend. Do NOT deploy in US East — a
+  transatlantic hop to London adds ~80-100ms on top of local edge latency.
+  Note: Polymarket's own servers run in the UK (eu-west-2), which is itself a geoblocked
+  jurisdiction for end-users. The geoblock is applied at the application layer (user IP),
+  not to the infrastructure — the servers have no nationality.
+- **VPS location — options ranked:**
+  Polymarket explicitly labels eu-west-1 (Ireland) as "Closest Non-Georestricted Region"
+  in their docs — this is their recommendation for bot operators. In practice:
+  | Location         | Est. RTT to CLOB | Notes                                         |
+  |------------------|-----------------|-----------------------------------------------|
+  | London (eu-west-2) | ~1-3ms        | Closest, but UK may have regulatory exposure  |
+  | Dublin (eu-west-1) | ~12-15ms      | Polymarket's explicit recommendation for bots |
+  | Amsterdam          | ~8-12ms       | Slightly closer than Dublin geographically;   |
+  |                    |               | no AWS region here, use Hetzner/Vultr/OVH     |
+  | Frankfurt (eu-central-1) | ~15-20ms | Good AWS fallback                          |
+  Amsterdam and Dublin are effectively equivalent (~5ms difference). Start with Hetzner
+  Amsterdam (~€10/month) — if latency matters at the margin, benchmark both before committing.
+- **Measured baselines (local macOS, for comparison)**: CLOB REST p50=63ms, p95=102ms.
+  CLOB WS first-msg ~400ms (one-time lazy connect + snapshot), inter-message gaps p50=107ms.
+  Exchange clock deltas: Binance no-ts (bookTicker), Coinbase -38ms skew, OKX +133ms, Bybit -8ms.
 - **Private RPC**: Required for Phase 2 (Alchemy/QuickNode EU, ~$50/month). Non-negotiable
   for both speed and reliability of order submission.
-- **Latency budget**: Edges are milliseconds, not seconds. Exchange price moves propagate to
-  Chainlink → Polymarket in ~100-200ms. Our total tick-to-trade must be competitive:
-  Binance WS (~100ms) + processing (<1ms) + CLOB submit (~10ms) ≈ 110ms.
-- **Geo-compliance**: Netherlands is not geo-blocked. Add geoblock check at bot startup.
+- **Geo-compliance**: Netherlands and Ireland are not geo-blocked. Geoblock check runs at bot startup.
 
 ## Risk Register
 | Risk | Mitigation |

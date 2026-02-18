@@ -48,6 +48,9 @@ RUST_LOG=mtb=debug cargo run
 ./scripts/dry-run-test.sh        # 3 minutes
 ./scripts/dry-run-test.sh 1      # 1 minute
 ./scripts/dry-run-test.sh 10     # 10 minutes
+
+# Latency benchmark — CLOB REST/WS + all exchange feeds, summary table
+cargo run --bin latency_bench
 ```
 
 To switch to live trading, change `mode = "live"` in `config.toml`. Requires funded Polymarket account with USDC allowances set.
@@ -145,6 +148,9 @@ src/
   lib.rs                  Re-exports for tests
   error.rs                Unified error types (thiserror)
 
+  bin/
+    latency_bench.rs      Standalone benchmark: CLOB REST/WS + exchange WS gaps + clock deltas
+
   config/
     mod.rs                Config loading (.env + config.toml)
     types.rs              AppConfig, RunMode, StrategyConfig, RiskConfig, Secrets
@@ -200,7 +206,7 @@ cargo test
 
 Covers: fee model (11), arb detection (7 — includes leg price filter), freshness guard (8), risk manager (7), trade logger (3), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Bybit feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (13 — includes exchange-only tier + snapshot tests), position limits (3).
 
-### Integration Tests (17)
+### Integration Tests (20)
 
 Hit real APIs. Marked `#[ignore]`, require network access:
 
@@ -212,6 +218,11 @@ cargo test -- --ignored --nocapture
 Or run specific tests:
 
 ```bash
+# CLOB REST/WS (no .env needed)
+cargo test clob_ws_receives_orderbook_updates -- --ignored --nocapture
+cargo test clob_rest_latency -- --ignored --nocapture
+cargo test clob_ws_orderbook_latency -- --ignored --nocapture
+
 # Exchange price feeds (no .env needed)
 cargo test binance_ws_receives_prices -- --ignored --nocapture
 cargo test coinbase_ws_receives_prices -- --ignored --nocapture
@@ -242,10 +253,13 @@ cargo test live_post_unfillable_fok_order -- --ignored --nocapture
 
 | Test | Auth | What it does |
 |------|------|-------------|
+| `clob_ws_receives_orderbook_updates` | No | CLOB WS subscription: validate book structure, measure inter-message gaps |
+| `clob_rest_latency` | No | CLOB REST round-trip latency: 20 `order_book()` calls, p50/p95/p99 |
+| `clob_ws_orderbook_latency` | No | CLOB WS timing: connect time, first-message time, inter-message gaps |
 | `binance_ws_receives_prices` | No | Direct Binance WS, verify bookTicker stream + gap stats |
 | `coinbase_ws_receives_prices` | No | Direct Coinbase WS, verify ticker stream + gap stats |
 | `okx_ws_receives_prices` | No | Direct OKX WS, verify tickers stream + gap stats |
-| `binance_network_latency` | No | Network latency to Binance (50 samples via @trade stream) |
+| `binance_network_latency` | No | Network latency to Binance (50 samples via `@trade` stream `E` field) |
 | `coinbase_network_latency` | No | Network latency to Coinbase (50 samples via ticker timestamp) |
 | `okx_network_latency` | No | Network latency to OKX (50 samples via server timestamp) |
 | `bybit_ws_receives_prices` | No | Direct Bybit WS, verify spot tickers stream + gap stats |
@@ -260,14 +274,24 @@ cargo test live_post_unfillable_fok_order -- --ignored --nocapture
 | `auth_build_and_sign_order` | Yes | Build and sign a FOK order (no submission) |
 | `live_post_unfillable_fok_order` | Yes | Post FOK at $0.01 (immediately killed, $0 cost) |
 
+### Latency Benchmark
+
+`cargo run --bin latency_bench` measures every data source in one run and prints a unified summary table. Use this to compare local vs VPS latency before deploying.
+
+Covers: CLOB REST round-trip, CLOB WS (connect + first-message + inter-message gaps), Binance/Coinbase/OKX/Bybit WS (connect, first-message, p50/p95 gaps, clock delta vs server timestamp).
+
 ### Measured Latencies (local, macOS)
+
+CLOB backend is **AWS eu-west-2 (London)** — confirmed in [Polymarket docs](https://docs.polymarket.com/developers/CLOB/geoblock). Deploy to Amsterdam or Frankfurt for lowest REST latency (~10-20ms expected vs ~63ms local).
 
 | Source | p50 | p95 | Notes |
 |--------|-----|-----|-------|
-| Binance | ~31ms | ~32ms | Direct WS, via `@trade` stream `E` field |
-| OKX | ~119ms | ~120ms | Direct WS, via server `ts` field |
-| Coinbase | ~30ms | — | Direct WS, clock offset noted (negative values) |
-| Bybit | ~20ms | ~72ms | Direct WS via publicTrade `T` field, clock offset ~-11ms |
+| CLOB REST | ~63ms | ~102ms | Round-trip RTT. Ping to Cloudflare edge ~8ms; remainder is backend hop to London |
+| CLOB WS | ~107ms | ~426ms | Inter-message gaps (no server timestamp). First message ~400ms (lazy connect + snapshot) |
+| Binance WS | ~31ms | ~32ms | Clock delta vs server `E` field (`@trade` stream) |
+| Coinbase WS | ~30ms | — | Clock offset ~-38ms (our clock behind Coinbase's) |
+| OKX WS | ~133ms | — | Clock delta vs `data[0].ts`; OKX servers in Asia |
+| Bybit WS | ~20ms | ~72ms | Clock offset ~-8ms |
 | Chainlink (RTDS) | ~1.2s | ~1.5s | Via Polymarket RTDS relay (sponsored key pending for direct) |
 
 ### Lint and Format

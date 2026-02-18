@@ -270,6 +270,230 @@ async fn batch_orderbook_fetch() {
 }
 
 // =============================================================================
+// CLOB latency tests — no auth required
+// =============================================================================
+
+/// CLOB WebSocket: verify orderbook subscription delivers valid updates and measure inter-message gaps.
+/// This validates our primary data path — the feed that drives every arb detection cycle.
+/// Note: CLOB WS messages have no server timestamp, so only local gap measurements are possible.
+/// cargo test clob_ws_receives_orderbook_updates -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn clob_ws_receives_orderbook_updates() {
+    use futures::StreamExt;
+    use polymarket_client_sdk::clob::ws::Client as WsClient;
+
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty(), "need at least one BTC market");
+
+    let market = &markets[0];
+    let token_id = U256::from_str(&market.up_token_id).unwrap();
+    println!("subscribing to CLOB WS orderbook for {}-UP token", market.asset);
+
+    let client = WsClient::default();
+    let stream = client
+        .subscribe_orderbook(vec![token_id])
+        .expect("subscribe_orderbook should succeed");
+    let mut stream = Box::pin(stream);
+
+    let samples = 10;
+    let mut count = 0usize;
+    let mut gaps_ms: Vec<u128> = Vec::new();
+    let mut prev = std::time::Instant::now();
+    let timeout_secs = 120u64;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+    println!("waiting for {samples} orderbook updates (timeout: {timeout_secs}s)...\n");
+
+    loop {
+        match tokio::time::timeout_at(deadline, stream.next()).await {
+            Ok(Some(Ok(book))) => {
+                let now = std::time::Instant::now();
+                let gap_ms = now.duration_since(prev).as_millis();
+                prev = now;
+                count += 1;
+
+                let best_ask = book.asks.last().map(|l| l.price);
+                let best_bid = book.bids.last().map(|l| l.price);
+
+                println!(
+                    "  [{:>2}] bid={:?} ask={:?} (bids={}, asks={}, gap={gap_ms}ms)",
+                    count,
+                    best_bid,
+                    best_ask,
+                    book.bids.len(),
+                    book.asks.len()
+                );
+
+                // Validate structure: all prices in (0, 1), positive sizes
+                for level in book.bids.iter().chain(book.asks.iter()) {
+                    assert!(level.price > dec!(0), "price should be > 0");
+                    assert!(level.price < dec!(1), "price should be < 1");
+                    assert!(level.size > dec!(0), "size should be > 0");
+                }
+
+                if count > 1 {
+                    gaps_ms.push(gap_ms);
+                }
+
+                if count >= samples {
+                    break;
+                }
+            }
+            Ok(Some(Err(e))) => println!("  stream error: {e}"),
+            Ok(None) => {
+                println!("  stream ended after {count} updates");
+                break;
+            }
+            Err(_) => {
+                println!("  timeout after {timeout_secs}s ({count}/{samples} updates received)");
+                break;
+            }
+        }
+    }
+
+    assert!(count > 0, "should receive at least one orderbook update");
+
+    if !gaps_ms.is_empty() {
+        gaps_ms.sort();
+        let min = gaps_ms.first().unwrap();
+        let max = gaps_ms.last().unwrap();
+        let avg = gaps_ms.iter().sum::<u128>() / gaps_ms.len() as u128;
+        println!(
+            "\n--- CLOB WS Orderbook Gaps ({} intervals) ---",
+            gaps_ms.len()
+        );
+        println!("  min: {min}ms  avg: {avg}ms  max: {max}ms");
+        println!("NOTE: no server timestamp — gaps measure local receive intervals, not one-way latency.");
+        println!("      CLOB WS sends a full snapshot on subscribe, then an update per order event.");
+    }
+}
+
+/// CLOB REST latency: measure round-trip time for order_book() calls (p50/p95/p99).
+/// Run locally and on VPS to compare — same approach as the exchange network_latency tests.
+/// cargo test clob_rest_latency -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn clob_rest_latency() {
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty(), "need at least one BTC market");
+
+    let market = &markets[0];
+    let clob = ClobClient::default();
+    let samples = 20;
+    let mut rtts_ms: Vec<i64> = Vec::new();
+
+    println!("CLOB REST latency: {samples} round-trips to order_book()...\n");
+
+    for i in 0..samples {
+        let request = book_request(&market.up_token_id);
+        let start = std::time::Instant::now();
+        clob.order_book(&request)
+            .await
+            .expect("order_book should succeed");
+        let rtt_ms = start.elapsed().as_millis() as i64;
+        rtts_ms.push(rtt_ms);
+
+        if i < 5 || i == samples - 1 {
+            println!("  [{:>2}] RTT = {rtt_ms}ms", i + 1);
+        } else if i == 5 {
+            println!("  ...");
+        }
+    }
+
+    print_latency_stats("CLOB REST order_book()", &mut rtts_ms);
+    println!("NOTE: RTT includes DNS, TLS, HTTP, server processing, and response parsing.");
+    println!("      CLOB backend is AWS eu-west-2 (London). Deploy to Amsterdam/Dublin for ~10-20ms RTT.");
+}
+
+/// CLOB WebSocket latency: measure connect time, first-message time, and inter-message gaps.
+/// Run locally and on VPS to compare.
+/// cargo test clob_ws_orderbook_latency -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn clob_ws_orderbook_latency() {
+    use futures::StreamExt;
+    use polymarket_client_sdk::clob::ws::Client as WsClient;
+
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty(), "need at least one BTC market");
+
+    let market = &markets[0];
+    let token_id = U256::from_str(&market.up_token_id).unwrap();
+
+    let connect_start = std::time::Instant::now();
+    let client = WsClient::default();
+    let stream = client
+        .subscribe_orderbook(vec![token_id])
+        .expect("subscribe_orderbook should succeed");
+    let connect_ms = connect_start.elapsed().as_millis();
+    println!("CLOB WS connect+subscribe: {connect_ms}ms");
+
+    let mut stream = Box::pin(stream);
+    let samples = 20;
+    let mut count = 0usize;
+    let mut gaps_ms: Vec<i64> = Vec::new();
+    let mut prev = std::time::Instant::now();
+    let mut first_msg_ms = 0u128;
+    let timeout_secs = 120u64;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+    println!("waiting for {samples} messages (timeout: {timeout_secs}s)...\n");
+
+    loop {
+        match tokio::time::timeout_at(deadline, stream.next()).await {
+            Ok(Some(Ok(_book))) => {
+                let now = std::time::Instant::now();
+                if count == 0 {
+                    first_msg_ms = now.duration_since(prev).as_millis();
+                    println!("  first message: {first_msg_ms}ms (post-subscribe)");
+                } else {
+                    gaps_ms.push(now.duration_since(prev).as_millis() as i64);
+                }
+                prev = now;
+                count += 1;
+                if count >= samples {
+                    break;
+                }
+            }
+            Ok(Some(Err(e))) => println!("  stream error: {e}"),
+            Ok(None) => {
+                println!("  stream ended");
+                break;
+            }
+            Err(_) => {
+                println!("  timeout ({count}/{samples} messages received)");
+                break;
+            }
+        }
+    }
+
+    println!("\n--- CLOB WS Latency Summary ---");
+    println!("  connect+subscribe: {connect_ms}ms");
+    println!("  first message:     {first_msg_ms}ms (post-subscribe)");
+    if !gaps_ms.is_empty() {
+        print_latency_stats("CLOB WS inter-message gaps", &mut gaps_ms);
+    }
+    println!("NOTE: no server timestamp — all times are local receive intervals.");
+    println!("      CLOB WS sends a full snapshot on subscribe, then an update per order event.");
+}
+
+// =============================================================================
 // Authenticated tests — require POLYMARKET_PRIVATE_KEY in .env
 // =============================================================================
 
@@ -988,7 +1212,7 @@ async fn chainlink_rtds_receives_prices() {
 }
 
 /// Print latency percentile stats.
-fn print_latency_stats(name: &str, latencies_ms: &mut Vec<i64>) {
+fn print_latency_stats(name: &str, latencies_ms: &mut [i64]) {
     latencies_ms.sort();
     let samples = latencies_ms.len();
     let min = latencies_ms.first().unwrap();
