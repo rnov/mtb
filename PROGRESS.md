@@ -49,7 +49,7 @@
 
 ### Phase 3 Test Coverage (cumulative)
 - 61 unit tests passing (+37 from Phase 2: feeds, PriceState with exchange-only tier + snapshots, freshness guard, trade logger, leg price filter)
-- 17 live integration tests (+9: exchange gap/latency tests for 4 exchanges + Chainlink RTDS)
+- 21 live integration tests (+9: exchange gap/latency tests for 4 exchanges + Chainlink RTDS; +1 CLOB min-size probe across all 4 assets)
 - Network latency (local): Binance ~31ms p50, OKX ~119ms p50, Coinbase ~30ms (clock offset noted), Chainlink RTDS ~1-1.5s (relay overhead)
 - `cargo fmt` / `cargo clippy` / `cargo test` — all clean, zero warnings
 
@@ -88,7 +88,9 @@
 - Multi-market prioritization — only 4 assets, all processed every tick. No bottleneck to solve yet.
 
 ### CLOB Constraints (discovered in live testing)
-- **$1 minimum order size**: Each individual order must cost ≥ $1 (`price × shares ≥ $1`). Orders below this are rejected with "invalid amount for a marketable BUY order, min size: $1". Docs: https://docs.polymarket.com/developers/CLOB/orders/create-order (INVALID_ORDER_MIN_SIZE error).
+- **$1 minimum order size (FOK takers)**: Each individual FOK taker order must cost ≥ $1 (`price × shares ≥ $1`). Orders below this are rejected with "invalid amount for a marketable BUY order, min size: $1". Empirically validated by `live_probe_min_order_size` integration test across all 4 assets (BTC, ETH, SOL, XRP): 1, 3, and 10 shares at $0.01 → rejected; 100 shares at $0.01 → FOK-killed (sub-$1 reached engine). Docs: https://docs.polymarket.com/developers/CLOB/orders/create-order (INVALID_ORDER_MIN_SIZE error).
+- **`min_order_size` in orderbook (maker orders only)**: The `min_order_size` field returned by the CLOB orderbook API (value: `5` for all 15-min crypto markets) is the minimum for **maker/resting limit orders** (GTC/GTD). It does **not** apply to FOK taker orders. Our bot only places FOK orders — this field is irrelevant to us.
+- **Startup validation**: In live mode, `verify_clob_minimum()` posts a guaranteed-sub-$1 probe order at startup and parses the "min size: $N" rejection. Aborts with a clear error if the exchange minimum doesn't match `config.min_order_usdc` — catches exchange rule changes before the first real order.
 - **Maker amount precision**: Market buy orders require maker_amount (USDC = price × shares) to have ≤ 2 decimal places. Integer shares with 2dp prices guarantee this. Fractional shares like 3.03 at $0.45 = $1.3635 (4dp) → rejected.
 - **Batch endpoint (`POST /orders`) doesn't work for FOK**: Returns empty status/order_id. Individual `POST /order` returns proper responses. Use `tokio::join!` for concurrent individual posts.
 - **FOK rejection is an error, not a status**: `POST /order` with FOK returns `Err("order couldn't be fully filled. FOK orders are fully filled or killed.")`, not `Ok(response)` with status Canceled.

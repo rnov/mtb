@@ -17,7 +17,7 @@ mod risk;
 mod strategy;
 
 use config::RunMode;
-use execution::{DryRunExecutor, Executor, LiveExecutor};
+use execution::{verify_clob_minimum, DryRunExecutor, Executor, LiveExecutor};
 use feed::{
     BybitFeed, ChainlinkFeed, CoinbaseFeed, CryptoPriceFeed, FeedEvent, OkxFeed, OrderbookFeed,
     PriceState,
@@ -119,6 +119,25 @@ async fn main() -> anyhow::Result<()> {
         warn!("no active markets found — will retry on next poll");
     } else {
         info!(count = markets.len(), "active markets found");
+    }
+
+    // CLOB minimum order size check — live mode only (requires auth + real market token).
+    // Probes the CLOB with a sub-$1 order and verifies the reported minimum matches config.
+    // Aborts if Polymarket has changed their policy and our config is stale.
+    if app_config.mode == RunMode::Live {
+        if let Some(market) = markets.first() {
+            verify_clob_minimum(
+                &app_config.clob_url,
+                app_config.chain_id,
+                &secrets.private_key,
+                &market.asset,
+                &market.up_token_id,
+                app_config.strategy.min_order_usdc,
+            )
+            .await?;
+        } else {
+            warn!("no markets found at startup — skipping CLOB minimum check");
+        }
     }
 
     // Send startup notification

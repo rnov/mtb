@@ -167,11 +167,11 @@ async fn rest_orderbook_returns_valid_data() {
 
     // Basic structural validation
     println!(
-        "orderbook: {} bids, {} asks, tick_size={:?}, min_order_size={}, neg_risk={}",
+        "orderbook: {} bids, {} asks, tick_size={:?}, maker_min_shares={}, neg_risk={}",
         book.bids.len(),
         book.asks.len(),
         book.tick_size,
-        book.min_order_size,
+        book.min_order_size, // SDK field: min shares for maker/resting orders, not FOK takers
         book.neg_risk,
     );
 
@@ -706,6 +706,143 @@ async fn live_post_unfillable_fok_order() {
     }
 
     println!("post: full order submission pipeline verified");
+}
+
+/// Probe the CLOB minimum order size across all 4 assets (BTC, ETH, SOL, XRP).
+///
+/// For each asset, submits FOK orders at increasing notional and records whether
+/// the CLOB rejects for min-size or lets the order reach the matching engine (FOK kill):
+///   MIN-SIZE REJECTION      → CLOB enforces a notional floor at that size
+///   FOK-KILLED (reached engine) → order passed size check, killed for lack of liquidity
+///
+/// All probes use price=$0.01 (far below market, cannot fill). Cost: $0.
+///
+/// cargo test live_probe_min_order_size -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn live_probe_min_order_size() {
+    let private_key = load_private_key();
+    let signer = LocalSigner::from_str(&private_key)
+        .expect("valid private key")
+        .with_chain_id(Some(POLYGON_CHAIN_ID));
+
+    // Authenticate once — reuse the same client for all probes
+    let client = ClobClient::new(CLOB_URL, Config::default())
+        .expect("create CLOB client")
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .expect("authentication should succeed");
+
+    let clob_ro = ClobClient::default();
+
+    // Discover all 4 assets in one call
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()],
+    };
+    let discovery = MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty(), "need at least one market");
+
+    // Probes: (shares, label)
+    let probes: &[(rust_decimal::Decimal, &str)] = &[
+        (dec!(1),   "1 share  × $0.01 = $0.01"),
+        (dec!(3),   "3 shares × $0.01 = $0.03"),
+        (dec!(10),  "10 shares × $0.01 = $0.10"),
+        (dec!(100), "100 shares × $0.01 = $1.00"),
+    ];
+
+    let probe_price = dec!(0.01);
+
+    // Summary row: asset, maker_min_shares (book field, irrelevant to us), CLOB taker min in dollars
+    let mut summary: Vec<(String, rust_decimal::Decimal, String)> = Vec::new();
+
+    for market in &markets {
+        let token_id = U256::from_str(&market.up_token_id).unwrap();
+
+        // Fetch orderbook — captures min_order_size field and best_ask for context
+        let book_req = OrderBookSummaryRequest::builder()
+            .token_id(token_id)
+            .build();
+        let book = clob_ro.order_book(&book_req).await.expect("orderbook fetch");
+        let best_ask = book.asks.iter().map(|a| a.price).min().unwrap_or(dec!(0.50));
+
+        println!();
+        println!("=== {} — UP token ===", market.asset);
+        println!(
+            "  best_ask={}  maker_min_shares(book field)={}  [NOT our taker minimum]",
+            best_ask, book.min_order_size
+        );
+        println!("  Probing with price={probe_price} (guaranteed below market, cannot fill):");
+        println!("  {:<30} {:<26} {}", "probe", "result", "full CLOB message");
+        println!("  {}", "-".repeat(90));
+
+        let mut clob_reported_min = "n/a".to_string();
+        for (size, label) in probes {
+            let order = client
+                .limit_order()
+                .token_id(token_id)
+                .price(probe_price)
+                .size(*size)
+                .side(Side::Buy)
+                .order_type(OrderType::FOK)
+                .build()
+                .await
+                .expect("order build should succeed");
+            let signed = client
+                .sign(&signer, order)
+                .await
+                .expect("order signing should succeed");
+
+            let (result, full_msg) = match client.post_order(signed).await {
+                Ok(resp) => (
+                    "FILLED (unexpected!)".to_string(),
+                    format!("status={:?}", resp.status),
+                ),
+                Err(e) => {
+                    let msg = e.to_string();
+                    let lower = msg.to_lowercase();
+                    if lower.contains("min") || lower.contains("size") {
+                        // Extract the dollar minimum reported by the CLOB, e.g. "min size: $1"
+                        if let Some(start) = msg.find("min size: $") {
+                            let after = &msg[start + "min size: $".len()..];
+                            let end = after.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(after.len());
+                            clob_reported_min = format!("${}", &after[..end]);
+                        }
+                        ("MIN-SIZE REJECTION".to_string(), msg)
+                    } else if lower.contains("fully filled")
+                        || lower.contains("fok")
+                        || lower.contains("killed")
+                        || lower.contains("not filled")
+                    {
+                        ("FOK-KILLED".to_string(), msg)
+                    } else {
+                        ("OTHER ERROR".to_string(), msg)
+                    }
+                }
+            };
+
+            println!("  {:<30} {:<26} {}", label, result, full_msg);
+        }
+
+        summary.push((market.asset.clone(), book.min_order_size, clob_reported_min));
+    }
+
+    println!();
+    println!("=== Summary ===");
+    println!(
+        "{:<6}  {:>20}  {:>18}",
+        "asset", "maker_min_shares", "taker_min_notional"
+    );
+    println!("{}", "-".repeat(50));
+    for (asset, book_min, clob_min) in &summary {
+        println!("{:<6}  {:>20}  {:>18}", asset, book_min, clob_min);
+    }
+    println!();
+    println!("  maker_min_shares   — book field; min shares for resting limit orders (not us)");
+    println!("  taker_min_notional — FOK enforcement; must be >= this per leg (our min_order_usdc)");
 }
 
 // =============================================================================

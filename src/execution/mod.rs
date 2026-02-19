@@ -23,4 +23,4 @@ pub trait Executor: Send + Sync {
 }
 
 pub use dry_run::DryRunExecutor;
-pub use live::LiveExecutor;
+pub use live::{verify_clob_minimum, LiveExecutor};

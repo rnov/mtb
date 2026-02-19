@@ -206,7 +206,7 @@ cargo test
 
 Covers: fee model (11), arb detection (7 — includes leg price filter), freshness guard (8), risk manager (7), trade logger (3), Binance feed parsing (3), Coinbase feed parsing (2), OKX feed parsing (2), Bybit feed parsing (2), Chainlink symbol mapping (2), PriceState multi-exchange (13 — includes exchange-only tier + snapshot tests), position limits (3).
 
-### Integration Tests (20)
+### Integration Tests (21)
 
 Hit real APIs. Marked `#[ignore]`, require network access:
 
@@ -249,6 +249,9 @@ cargo test auth_clob_authenticate -- --ignored --nocapture
 cargo test auth_check_balance_allowance -- --ignored --nocapture
 cargo test auth_build_and_sign_order -- --ignored --nocapture
 cargo test live_post_unfillable_fok_order -- --ignored --nocapture
+
+# CLOB minimum order size probe (requires POLYMARKET_PRIVATE_KEY in .env)
+cargo test live_probe_min_order_size -- --ignored --nocapture
 ```
 
 | Test | Auth | What it does |
@@ -273,6 +276,7 @@ cargo test live_post_unfillable_fok_order -- --ignored --nocapture
 | `auth_check_balance_allowance` | Yes | Check USDC balance and allowances on proxy wallet |
 | `auth_build_and_sign_order` | Yes | Build and sign a FOK order (no submission) |
 | `live_post_unfillable_fok_order` | Yes | Post FOK at $0.01 (immediately killed, $0 cost) |
+| `live_probe_min_order_size` | Yes | Probe CLOB FOK taker minimum across all 4 assets; confirms $1 notional floor and prints maker vs taker minimum summary |
 
 ### Latency Benchmark
 

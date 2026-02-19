@@ -396,6 +396,106 @@ impl Executor for LiveExecutor {
     }
 }
 
+/// Startup probe: confirm the CLOB's minimum notional per FOK taker order matches config.
+///
+/// Posts 1 share at $0.01 (notional $0.01). The CLOB rejects it before the matching engine:
+///   "invalid amount for a marketable BUY order ($0.01), min size: $1"
+/// Parses the reported minimum and compares it to `configured_min`. Aborts if they differ.
+///
+/// Cost: $0 — rejected before the matching engine.
+pub async fn verify_clob_minimum(
+    clob_url: &str,
+    chain_id: u64,
+    private_key: &str,
+    asset: &str,
+    token_id: &str,
+    configured_min: Decimal,
+) -> crate::error::Result<()> {
+    info!(
+        asset = %asset,
+        token = %&token_id[..token_id.len().min(16)],
+        configured_min = %configured_min,
+        "probing CLOB minimum order size"
+    );
+    let key = private_key.strip_prefix("0x").unwrap_or(private_key);
+    let signer = LocalSigner::from_str(key)
+        .map_err(|e| Error::Execution(format!("invalid private key: {e}")))?
+        .with_chain_id(Some(chain_id));
+
+    let client = Client::new(clob_url, Config::default())
+        .map_err(|e| Error::Sdk(format!("failed to create CLOB client: {e}")))?
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .map_err(|e| Error::Sdk(format!("authentication failed: {e}")))?;
+
+    let token = U256::from_str(token_id)
+        .map_err(|e| Error::Execution(format!("invalid token ID: {e}")))?;
+
+    let order = client
+        .limit_order()
+        .token_id(token)
+        .price(Decimal::new(1, 2)) // $0.01
+        .size(Decimal::ONE)         // 1 share → $0.01 notional, clearly sub-$1
+        .side(Side::Buy)
+        .order_type(OrderType::FOK)
+        .build()
+        .await
+        .map_err(|e| Error::Sdk(format!("failed to build probe order: {e}")))?;
+
+    let signed = client
+        .sign(&signer, order)
+        .await
+        .map_err(|e| Error::Sdk(format!("failed to sign probe order: {e}")))?;
+
+    match client.post_order(signed).await {
+        Err(e) => {
+            let msg = e.to_string();
+            if let Some(clob_min) = parse_min_size(&msg) {
+                if clob_min == configured_min {
+                    info!(confirmed = %clob_min, "CLOB minimum order size confirmed");
+                    Ok(())
+                } else {
+                    Err(Error::Execution(format!(
+                        "CLOB minimum order size mismatch: CLOB requires ${clob_min} \
+                         but config has min_order_usdc=${configured_min} — \
+                         update config.toml before going live"
+                    )))
+                }
+            } else if is_fok_rejection(&msg) {
+                // $0.01 somehow reached the matching engine — minimum is below $0.01
+                warn!(
+                    configured = %configured_min,
+                    "CLOB minimum probe: sub-$0.01 order reached matching engine — \
+                     config min_order_usdc may be overly conservative"
+                );
+                Ok(())
+            } else {
+                // Network error, auth issue, etc. — warn but don't abort startup
+                warn!(error = %e, "CLOB minimum probe returned unexpected error — skipping check");
+                Ok(())
+            }
+        }
+        Ok(_) => {
+            // Very unexpected: a $0.01 order filled
+            warn!("CLOB minimum probe order filled at $0.01 — check for unexpected position");
+            Ok(())
+        }
+    }
+}
+
+/// Extract the minimum dollar amount from a CLOB min-size rejection.
+/// Expected format: "invalid amount for a marketable BUY order ($0.01), min size: $1"
+fn parse_min_size(msg: &str) -> Option<Decimal> {
+    let marker = "min size: $";
+    let start = msg.find(marker)? + marker.len();
+    let end = msg[start..]
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(msg[start..].len());
+    msg[start..start + end].parse().ok()
+}
+
 /// FOK rejection: the CLOB returns an error (not a response) when a FOK
 /// order can't be fully filled. This is normal — the book moved.
 fn is_fok_rejection(msg: &str) -> bool {

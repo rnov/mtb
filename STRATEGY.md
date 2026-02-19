@@ -91,7 +91,7 @@ Config: `strategy.max_leg_price`
 Use `scripts/exposure_calculator.py` to calibrate (see Config Calibration below).
 
 #### Filter 4 — Min notional (Step 8a)
-The CLOB rejects any individual order below `min_order_usdc` ($1.00). Minimum shares per leg:
+The CLOB rejects any FOK taker order below `min_order_usdc` ($1.00 — empirically validated across all 4 assets via `live_probe_min_order_size` integration test). Note: the `min_order_size` field in the CLOB orderbook response (`5`) is for maker/resting orders only — not enforced on FOK takers. Minimum shares per leg:
 ```
 min_shares_up   = ceil(min_order_usdc / up_ask)
 min_shares_down = ceil(min_order_usdc / down_ask)
