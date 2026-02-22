@@ -32,6 +32,7 @@ teloxide = { version = "0.13", features = ["macros"], optional = true }
 prometheus = { version = "0.13", optional = true }
 axum = { version = "0.8", optional = true }
 async-trait = "0.1.89"
+openssl = { version = "0.10", features = ["vendored"] }   # required for musl cross-compilation (native-tls transitive dep)
 
 [features]
 default = ["telegram"]

@@ -166,24 +166,112 @@ larger edge / smaller size.
   Note: Polymarket's own servers run in the UK (eu-west-2), which is itself a geoblocked
   jurisdiction for end-users. The geoblock is applied at the application layer (user IP),
   not to the infrastructure — the servers have no nationality.
-- **VPS location — options ranked:**
-  Polymarket explicitly labels eu-west-1 (Ireland) as "Closest Non-Georestricted Region"
-  in their docs — this is their recommendation for bot operators. In practice:
-  | Location         | Est. RTT to CLOB | Notes                                         |
-  |------------------|-----------------|-----------------------------------------------|
-  | London (eu-west-2) | ~1-3ms        | Closest, but UK may have regulatory exposure  |
-  | Dublin (eu-west-1) | ~12-15ms      | Polymarket's explicit recommendation for bots |
-  | Amsterdam          | ~8-12ms       | Slightly closer than Dublin geographically;   |
-  |                    |               | no AWS region here, use Hetzner/Vultr/OVH     |
-  | Frankfurt (eu-central-1) | ~15-20ms | Good AWS fallback                          |
-  Amsterdam and Dublin are effectively equivalent (~5ms difference). Start with Hetzner
-  Amsterdam (~€10/month) — if latency matters at the margin, benchmark both before committing.
+- **VPS location — options ranked (measured RTT to CLOB):**
+  UK is geoblocked so a London VPS IP will have orders rejected despite being the same DC.
+  AWS eu-west-1→eu-west-2 RTT is **~11ms** on the private AWS backbone (never public internet).
+  Amsterdam via AMS-IX peering is **~8-12ms** on the public internet — marginally faster
+  in absolute RTT but more jitter. Practical difference is 1-3ms; negligible vs execution overhead.
+  | Location              | RTT to CLOB   | Path          | Geoblock | Notes                                          |
+  |-----------------------|---------------|---------------|----------|------------------------------------------------|
+  | London (eu-west-2)    | ~1-5ms        | —             | **YES**  | UK IP = orders rejected                        |
+  | Amsterdam, NL         | ~8-12ms       | Public/AMS-IX | **YES (auth)** | Blocked for authenticated trading — confirmed empirically. Public endpoints (REST reads, latency bench) work fine, but live order placement returns "geo-blocked: trading not available from NL". Not listed in official docs — docs are outdated. |
+  | Paris / Roubaix, FR   | ~10-14ms      | Public        | No       | OVH HQ, excellent EU peering                  |
+  | Dublin (eu-west-1)    | **~11ms**     | AWS backbone  | No       | Measured; private fiber, low jitter; Polymarket's endorsed region |
+  | Frankfurt (eu-central-1) | ~15-20ms  | Public        | No       | Hetzner closest; also Germany has regulatory risk for prediction markets |
+- **AWS eu-west-1 vs Amsterdam VPS — key findings:**
+  - AWS private backbone Dublin→London: **~11ms avg, ~11-13ms range** (measured). Stays off
+    public internet entirely — lower jitter than any VPS routing.
+  - Amsterdam AMS-IX→London: **~8-12ms** (measured). Can be 1-3ms faster in absolute RTT
+    but subject to internet routing variability.
+  - "Sub-1ms" claims from trading VPS providers measure RTT to the nearest **Cloudflare
+    edge PoP** (TLS termination), not the CLOB backend in London. Treat as marketing.
+  - For a parity arb bot where end-to-end execution is ~10-50ms, a 2ms RTT difference
+    does not change outcomes. **Consistency (AWS) vs marginally lower floor (Amsterdam).**
+- **VPS providers researched:**
+  | Provider | Location | Price | Notes |
+  |---|---|---|---|
+  | [TradingVPS](https://tradingvps.io/) | Amsterdam | ~$19/mo | AMD Ryzen 9950X + NVMe; trading-focused peering; best price for a specialized option |
+  | [QuantVPS](https://www.quantvps.com/polymarket-vps) | Amsterdam | ~$60/mo | Polymarket-specific colocation; colocated near AMS-IX |
+  | [Vultr](https://www.vultr.com/) | Amsterdam | $6–24/mo | Good general cloud; best for initial benchmarking before committing |
+  | [DigitalOcean](https://www.digitalocean.com/) | Amsterdam | $12–24/mo | Reliable, simple ops |
+  | [Linode/Akamai](https://www.linode.com/) | Amsterdam | $12–20/mo | Strong EU network |
+  | AWS EC2 t3.small | eu-west-1 Dublin | ~$15/mo | Private backbone; Polymarket's endorsed region; t3.micro ($7.60) works too |
+  | [OVH](https://www.ovhcloud.com/) | Roubaix, FR | $6–50/mo | Near NL/BE border; excellent peering; bare metal options |
+  | [Contabo](https://contabo.com/) | Amsterdam | $6–15/mo | Cheapest but network quality lower — avoid for latency work |
+  Hetzner does NOT have an Amsterdam DC — Frankfurt/Nuremberg only (~15-20ms to CLOB).
+- **Benchmark results (Vultr HF Amsterdam, x86_64-unknown-linux-musl binary, 3 runs):**
+  | Run | CLOB REST p50 | CLOB REST p95 | CLOB WS first-msg | Notes |
+  |---|---|---|---|---|
+  | Run 1 | 26ms | 34ms | 118ms | Quiet market (6512ms WS gap p50) |
+  | Run 2 | 24ms | 34ms | 106ms | Active market (35ms WS gap p50) |
+  | Run 3 (same-time as local) | 24ms | 27ms | 113ms | Side-by-side comparison |
+  | **Local macOS (same-time)** | **58ms** | **66ms** | **362ms** | 2.4× slower than VPS |
+
+  Same-time run confirmed CLOB WS inter-message gaps are identical from both locations
+  (Vultr: 7437ms, local: 7435ms) — gaps are market activity, not network latency.
+  Exchange connect times all faster from Vultr (closer to exchange endpoints).
+
+- **Amsterdam geo-block finding:** Netherlands is blocked for **authenticated trading** despite
+  not appearing on the official Polymarket geoblock docs. Public endpoints (orderbook reads,
+  latency bench) work fine from NL. Live mode immediately returns:
+  `geo-blocked: trading not available from NL (x.x.x.x)`.
+  This rules out: Vultr Amsterdam, TradingVPS Amsterdam, DigitalOcean Amsterdam, any NL VPS.
+
+- **Recommended path (updated):**
+  1. AWS eu-west-1 (Dublin, Ireland) — Polymarket's own endorsed region, private backbone
+     to London (~11ms), Ireland confirmed not geo-blocked. Resolve AWS new-account region
+     restrictions to launch t3.small in eu-west-1.
+  2. Alternative: find a Dublin/Ireland VPS provider (Linode/Akamai has Dublin DC).
+  3. Full research and reasoning: see `VPS_RESEARCH.md` (local, untracked).
 - **Measured baselines (local macOS, for comparison)**: CLOB REST p50=63ms, p95=102ms.
   CLOB WS first-msg ~400ms (one-time lazy connect + snapshot), inter-message gaps p50=107ms.
   Exchange clock deltas: Binance no-ts (bookTicker), Coinbase -38ms skew, OKX +133ms, Bybit -8ms.
+- **Industry latency benchmarks vs our bot — competitive analysis:**
+  Parity arb opportunities (both sides < $1) are visible to all bots subscribed to the same
+  CLOB WS stream. First to submit both FOK orders wins; others hit a moved book. End-to-end
+  tick-to-trade latency determines the outcome of that race.
+
+  *Opportunity window (researched):*
+  | Arb type | Avg window (2025) | Down from (2024) |
+  |---|---|---|
+  | All arb types combined | ~2.7 seconds | ~12.3 seconds |
+  | Simple parity / complement arb | ~4 seconds | — |
+  | 73% of all arb profits captured by | sub-100ms bots | — |
+
+  *Our end-to-end tick-to-trade breakdown:*
+  | Component | Local macOS (measured) | Vultr Amsterdam (measured) |
+  |---|---|---|
+  | CLOB REST p50 (order submission) | ~58-63ms | **~24-26ms** |
+  | CLOB REST p95 | ~66-102ms | **~27-34ms** |
+  | CLOB WS first-msg (connect + snapshot) | ~362ms | **~106-118ms** |
+  | CLOB WS inter-msg gap | market-driven | identical to local (confirmed same-time) |
+  | Strategy processing (arb detect + risk) | ~0.1ms | ~0.1ms (Rust, ~115μs) |
+  | **Total tick→trade (estimated)** | **~170ms** | **~30-40ms** |
+
+  *Geographic latency floor — the key constraint for all competitors:*
+  The UK geoblock means NO bot can legally be closer than ~8-11ms to the CLOB. This
+  creates a hard floor that applies equally to all competitors. Bots are effectively
+  clustered into two tiers:
+  | Tier | Location | RTT floor | Notes |
+  |---|---|---|---|
+  | Best possible | Amsterdam / Dublin | ~8-11ms | The competitive cluster; where serious bots run |
+  | Mid-tier | Frankfurt | ~15-20ms | Structural disadvantage vs Amsterdam cluster |
+  | Uncompetitive | Home / local | ~63ms+ | Too slow; other bots at 20-40ms will consistently win |
+
+  *Our position:*
+  - **Local macOS (~170ms)**: well inside the 4s opportunity window in absolute terms, but
+    other bots at Amsterdam (~20-40ms) will consistently beat us to the fill. Not viable.
+  - **VPS Amsterdam/Dublin (~20-40ms)**: inside the competitive cluster. We're racing bots
+    at the same geographic tier. The differentiator at that point is **processing speed**:
+    our Rust bot at ~115μs strategy processing is faster than Python/JS bots (~1-5ms),
+    giving a ~1-5ms edge when every millisecond at the same network distance counts.
+  - **The geoblock is a leveler**: nobody in the competitive cluster has more than ~3-4ms
+    network advantage over anyone else at Amsterdam. Rust processing speed and low-jitter
+    VPS network become the actual differentiators.
 - **Private RPC**: Required for Phase 2 (Alchemy/QuickNode EU, ~$50/month). Non-negotiable
   for both speed and reliability of order submission.
-- **Geo-compliance**: Netherlands and Ireland are not geo-blocked. Geoblock check runs at bot startup.
+- **Geo-compliance**: Ireland (AWS eu-west-1) confirmed not geo-blocked. Netherlands is **blocked for authenticated trading** — empirically confirmed (live mode returns geo-block error from NL IP despite not being on the official docs list). France is on the official geoblock list. Germany is on the official geoblock list. Geoblock check runs at bot startup.
+- **Full VPS research**: see `VPS_RESEARCH.md` (local, untracked).
 
 ## Risk Register
 | Risk | Mitigation |
