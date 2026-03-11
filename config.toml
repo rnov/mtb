@@ -1,4 +1,4 @@
-mode = "dry_run"
+mode = "live"
 clob_url = "https://clob.polymarket.com"
 gamma_url = "https://gamma-api.polymarket.com"
 chain_id = 137
@@ -8,7 +8,7 @@ min_arb_profit = "0.005"
 assets = ["BTC", "ETH", "SOL", "XRP"]
 max_order_size_usdc = "4"
 min_order_usdc = "1"         # CLOB minimum notional per FOK taker order (enforced by exchange, do not lower)
-max_leg_price = "0.50"       # never buy either side above this — avoids directional exposure on partial fill
+max_leg_price = "0.59"       # never buy either side above this — avoids directional exposure on partial fill
 min_fresh_sources = 2        # need at least 2 exchanges with fresh prices for leg-risk check
 max_price_age_ms = 2000      # exchange prices older than 2s = book likely moving, skip
 max_divergence_pct = "0.5"   # exchanges diverge >0.5% = high leg risk, skip
@@ -26,7 +26,7 @@ assets = ["BTC", "ETH", "SOL", "XRP"]
 
 [logging]
 trade_log_path = "logs/trades.jsonl"
-filter = "mtb=debug,info"
+filter = "mtb=info"
 
 [telegram]
 chat_id=0

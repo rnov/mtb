@@ -1,12 +1,14 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use alloy::signers::local::LocalSigner;
+use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer as _;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use tracing::{error, info, warn};
 
+use polymarket_client_sdk::auth::state::Authenticated;
+use polymarket_client_sdk::auth::Normal;
 use polymarket_client_sdk::clob::types::{OrderStatusType, OrderType, Side, SignatureType};
 use polymarket_client_sdk::clob::{Client, Config};
 use polymarket_client_sdk::types::U256;
@@ -26,47 +28,37 @@ const RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Live executor: places real orders on Polymarket CLOB.
+///
+/// The CLOB client is authenticated once at construction time and reused for
+/// every execution — auth is not repeated per-arb or per-retry.
 pub struct LiveExecutor {
-    clob_url: String,
-    chain_id: u64,
-    private_key: String,
-    signature_type: SignatureType,
+    client: Client<Authenticated<Normal>>,
+    signer: PrivateKeySigner,
 }
 
 impl LiveExecutor {
-    pub fn new(clob_url: String, chain_id: u64, private_key: String) -> Self {
-        Self {
-            clob_url,
-            chain_id,
-            private_key,
-            // GnosisSafe = browser wallet (MetaMask) login; uses proxy wallet
-            signature_type: SignatureType::GnosisSafe,
-        }
+    /// Authenticate with the CLOB once and return a ready executor.
+    pub async fn new(clob_url: String, chain_id: u64, private_key: String) -> Result<Self> {
+        let key = private_key.strip_prefix("0x").unwrap_or(&private_key);
+        let signer = PrivateKeySigner::from_str(key)
+            .map_err(|e| Error::Execution(format!("invalid private key: {e}")))?
+            .with_chain_id(Some(chain_id));
+
+        let client = Client::new(&clob_url, Config::default())
+            .map_err(|e| Error::Sdk(format!("failed to create CLOB client: {e}")))?
+            .authentication_builder(&signer)
+            .signature_type(SignatureType::GnosisSafe)
+            .authenticate()
+            .await
+            .map_err(|e| Error::Sdk(format!("authentication failed: {e}")))?;
+
+        info!("CLOB client authenticated");
+        Ok(Self { client, signer })
     }
 
     /// Inner execution logic, called by the retry wrapper.
     async fn execute_inner(&self, opportunity: &Opportunity) -> Result<ExecutionResult> {
         use std::time::Instant;
-
-        // Build signer from private key (strip 0x prefix if present)
-        let key = self
-            .private_key
-            .strip_prefix("0x")
-            .unwrap_or(&self.private_key);
-        let signer = LocalSigner::from_str(key)
-            .map_err(|e| Error::Execution(format!("invalid private key: {e}")))?
-            .with_chain_id(Some(self.chain_id));
-
-        // Authenticate with CLOB (GnosisSafe = browser wallet proxy)
-        let auth_start = Instant::now();
-        let client = Client::new(&self.clob_url, Config::default())
-            .map_err(|e| Error::Sdk(format!("failed to create CLOB client: {e}")))?
-            .authentication_builder(&signer)
-            .signature_type(self.signature_type)
-            .authenticate()
-            .await
-            .map_err(|e| Error::Sdk(format!("authentication failed: {e}")))?;
-        let auth_ms = auth_start.elapsed().as_millis();
 
         // Parse token IDs from strings to U256
         let up_token_id = U256::from_str(&opportunity.up_token_id)
@@ -74,47 +66,43 @@ impl LiveExecutor {
         let down_token_id = U256::from_str(&opportunity.down_token_id)
             .map_err(|e| Error::Execution(format!("invalid down token ID: {e}")))?;
 
-        // Units are pre-computed by the strategy layer and stored on the opportunity.
-        // Both legs always get the same share count: 1 Up + 1 Down = $1 payout.
         let units = floor_shares(opportunity.units);
-        let up_shares = units;
-        let down_shares = units;
 
-        // Build UP order: buy up_token at the ask price (FOK = fill-or-kill)
+        // Build UP and DOWN orders concurrently — two async HTTP calls in parallel.
         let build_start = Instant::now();
-        let up_order = client
-            .limit_order()
-            .token_id(up_token_id)
-            .price(opportunity.up_ask)
-            .size(up_shares)
-            .side(Side::Buy)
-            .order_type(OrderType::FOK)
-            .build()
-            .await
+        let (up_order_res, down_order_res) = tokio::join!(
+            self.client
+                .limit_order()
+                .token_id(up_token_id)
+                .price(opportunity.up_ask)
+                .size(units)
+                .side(Side::Buy)
+                .order_type(OrderType::FOK)
+                .build(),
+            self.client
+                .limit_order()
+                .token_id(down_token_id)
+                .price(opportunity.down_ask)
+                .size(units)
+                .side(Side::Buy)
+                .order_type(OrderType::FOK)
+                .build(),
+        );
+        let up_order = up_order_res
             .map_err(|e| Error::Sdk(format!("failed to build UP order: {e}")))?;
-
-        // Build DOWN order: buy down_token at the ask price
-        let down_order = client
-            .limit_order()
-            .token_id(down_token_id)
-            .price(opportunity.down_ask)
-            .size(down_shares)
-            .side(Side::Buy)
-            .order_type(OrderType::FOK)
-            .build()
-            .await
+        let down_order = down_order_res
             .map_err(|e| Error::Sdk(format!("failed to build DOWN order: {e}")))?;
         let build_ms = build_start.elapsed().as_millis();
 
-        // Sign both orders
+        // Sign both orders concurrently — pure local ECDSA, but may involve async SDK calls.
         let sign_start = Instant::now();
-        let signed_up = client
-            .sign(&signer, up_order)
-            .await
+        let (signed_up_res, signed_down_res) = tokio::join!(
+            self.client.sign(&self.signer, up_order),
+            self.client.sign(&self.signer, down_order),
+        );
+        let signed_up = signed_up_res
             .map_err(|e| Error::Sdk(format!("failed to sign UP order: {e}")))?;
-        let signed_down = client
-            .sign(&signer, down_order)
-            .await
+        let signed_down = signed_down_res
             .map_err(|e| Error::Sdk(format!("failed to sign DOWN order: {e}")))?;
         let sign_ms = sign_start.elapsed().as_millis();
 
@@ -123,9 +111,17 @@ impl LiveExecutor {
         // Individual POST /order returns proper responses, and tokio::join! fires
         // both requests simultaneously for minimal timing gap.
         let post_start = Instant::now();
-        let (up_result, down_result) = tokio::join!(
-            client.post_order(signed_up),
-            client.post_order(signed_down),
+        let ((up_result, up_post_ms), (down_result, down_post_ms)) = tokio::join!(
+            async {
+                let t = Instant::now();
+                let r = self.client.post_order(signed_up).await;
+                (r, t.elapsed().as_millis())
+            },
+            async {
+                let t = Instant::now();
+                let r = self.client.post_order(signed_down).await;
+                (r, t.elapsed().as_millis())
+            },
         );
         let post_ms = post_start.elapsed().as_millis();
 
@@ -134,9 +130,10 @@ impl LiveExecutor {
             units = %units,
             up_price = %opportunity.up_ask,
             down_price = %opportunity.down_ask,
-            auth_ms = auth_ms,
             build_ms = build_ms,
             sign_ms = sign_ms,
+            up_post_ms = up_post_ms,
+            down_post_ms = down_post_ms,
             post_ms = post_ms,
             "latency: execution breakdown"
         );
@@ -338,7 +335,7 @@ impl Executor for LiveExecutor {
             asset = %opportunity.asset,
             profit = %opportunity.expected_profit_usdc,
             size = %opportunity.total_cost_usdc,
-            "[LIVE] executing arb"
+            "[LIVE] executing arb — client already authenticated"
         );
 
         // Wrap the entire execution in a timeout
@@ -418,7 +415,7 @@ pub async fn verify_clob_minimum(
         "probing CLOB minimum order size"
     );
     let key = private_key.strip_prefix("0x").unwrap_or(private_key);
-    let signer = LocalSigner::from_str(key)
+    let signer = PrivateKeySigner::from_str(key)
         .map_err(|e| Error::Execution(format!("invalid private key: {e}")))?
         .with_chain_id(Some(chain_id));
 

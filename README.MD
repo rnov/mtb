@@ -42,6 +42,7 @@ EOF
 cargo run
 
 # With debug logging (see Binance prices, orderbook updates, latency)
+# Note: config.toml sets filter = "mtb=info" by default (error/warn/info only)
 RUST_LOG=mtb=debug cargo run
 
 # Timed dry-run test (default 3 minutes, logs to logs/trades.jsonl)

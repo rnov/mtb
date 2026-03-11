@@ -160,6 +160,14 @@ FOK = fill-or-kill. No partial fills at the CLOB level per order. The two orders
 
 FOK kills (both sides) do **not** count toward the consecutive failure kill switch — this is normal market behavior with zero cost.
 
+**Measured post latency (EC2 Ireland, live orders):**
+```
+build_ms  ~36-48ms   (concurrent, HTTP to fetch nonce/state — varies per new token pair)
+sign_ms   ~15ms      (ECDSA crypto, local)
+post_ms   ~300ms     (matching engine processing — same for match and kill)
+```
+The ~300ms post time is CLOB server-side matching engine latency, not network (network Dublin→London is ~22ms round trip). It applies equally to matched and FOK-killed orders. This is irreducible — it defines the TOCTOU window during which another participant can consume the liquidity between our snapshot and our fill.
+
 ---
 
 ### 7. Risk Controls

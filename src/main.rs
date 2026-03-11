@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
                 app_config.clob_url.clone(),
                 app_config.chain_id,
                 secrets.private_key.clone(),
-            ))
+            ).await?)
         }
     };
 
