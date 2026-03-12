@@ -846,6 +846,156 @@ async fn live_probe_min_order_size() {
 }
 
 // =============================================================================
+// Batch order atomicity test
+// =============================================================================
+
+/// Test whether POST /orders provides atomic FOK semantics across both legs.
+///
+/// Strategy:
+///   UP leg  — priced at best_ask (fillable if liquidity exists)
+///   DOWN leg — priced one tick below best_ask (unfillable, FOK-killed)
+///
+/// Interpretation:
+///   UP filled  + DOWN killed  → NOT atomic. Same partial fill risk as two individual POSTs.
+///   Both killed               → Possibly atomic (or UP had no liquidity at that moment).
+///   Batch errors entirely     → Endpoint doesn't support FOK at all.
+///
+/// ⚠️  REAL COST RISK: if not atomic, the UP leg will fill at best_ask × min_shares (~$1-2).
+/// You will hold a stranded UP position until the 15-min market resolves.
+/// Run this only when you accept that risk.
+///
+/// cargo test live_batch_fok_atomicity -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn live_batch_fok_atomicity() {
+    let private_key = load_private_key();
+    let signer = LocalSigner::from_str(&private_key)
+        .expect("valid private key")
+        .with_chain_id(Some(POLYGON_CHAIN_ID));
+
+    let client = ClobClient::new(CLOB_URL, Config::default())
+        .expect("create CLOB client")
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .expect("authentication should succeed");
+
+    // Discover a live market
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = mtb::market::MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty(), "no active markets found");
+    let market = &markets[0];
+
+    let up_token = U256::from_str(&market.up_token_id).unwrap();
+    let down_token = U256::from_str(&market.down_token_id).unwrap();
+
+    // Fetch current best asks from REST orderbook
+    let books = client
+        .order_books(&[
+            OrderBookSummaryRequest::builder().token_id(up_token).build(),
+            OrderBookSummaryRequest::builder().token_id(down_token).build(),
+        ])
+        .await
+        .expect("order_books fetch should succeed");
+
+    let up_ask: Decimal = books[0]
+        .asks
+        .first()
+        .map(|l| l.price)
+        .expect("UP book has no asks");
+    let down_ask: Decimal = books[1]
+        .asks
+        .first()
+        .map(|l| l.price)
+        .expect("DOWN book has no asks");
+
+    // Minimum shares per leg to meet the $1 CLOB floor
+    let up_min_shares = (Decimal::ONE / up_ask).ceil();
+    let _down_min_shares = (Decimal::ONE / down_ask).ceil();
+
+    // UP: price at best_ask — fillable
+    // DOWN: hardcoded at $0.01 with 100 shares ($1.00 notional, passes CLOB floor)
+    //       No seller exists at $0.01 — guaranteed FOK-kill regardless of book state.
+    let down_unfillable_price = dec!(0.01);
+    let down_unfillable_shares = dec!(100); // 100 × $0.01 = $1.00 notional
+
+    println!("market: {} ({})", market.asset, market.market_id);
+    println!("up_ask={up_ask}  up_min_shares={up_min_shares}  → cost ~${:.2}", up_ask * up_min_shares);
+    println!("down_ask={down_ask}  down_unfillable_price={down_unfillable_price} (hardcoded, guaranteed no fill)");
+    println!("⚠️  if NOT atomic: UP leg will fill for ~${:.2}", up_ask * up_min_shares);
+
+    // Build both orders
+    let up_order = client
+        .limit_order()
+        .token_id(up_token)
+        .price(up_ask)
+        .size(up_min_shares)
+        .side(Side::Buy)
+        .order_type(OrderType::FOK)
+        .build()
+        .await
+        .expect("UP order build should succeed");
+
+    let down_order = client
+        .limit_order()
+        .token_id(down_token)
+        .price(down_unfillable_price)
+        .size(down_unfillable_shares)
+        .side(Side::Buy)
+        .order_type(OrderType::FOK)
+        .build()
+        .await
+        .expect("DOWN order build should succeed");
+
+    let signed_up = client.sign(&signer, up_order).await.expect("sign UP");
+    let signed_down = client.sign(&signer, down_order).await.expect("sign DOWN");
+
+    // Submit both as a single batch
+    println!("submitting batch via POST /orders...");
+    match client.post_orders(vec![signed_up, signed_down]).await {
+        Ok(responses) => {
+            println!("batch returned {} response(s):", responses.len());
+            for (i, r) in responses.iter().enumerate() {
+                let leg = if i == 0 { "UP " } else { "DOWN" };
+                println!(
+                    "  {leg}: order_id={} success={} status={:?} making={} taking={} error={:?}",
+                    r.order_id, r.success, r.status, r.making_amount, r.taking_amount, r.error_msg
+                );
+            }
+
+            // success=true is unreliable for FOK kills — the CLOB returns success=true
+            // with making=0 and an error message when the order is killed.
+            // Use making_amount > 0 as the actual fill indicator.
+            let up_filled = responses.first().map(|r| r.making_amount > Decimal::ZERO).unwrap_or(false);
+            let down_filled = responses.get(1).map(|r| r.making_amount > Decimal::ZERO).unwrap_or(false);
+
+            match (up_filled, down_filled) {
+                (true, false) | (false, true) => {
+                    println!("\n⚠️  RESULT: NOT ATOMIC — one leg filled, one killed.");
+                    println!("   POST /orders has same partial fill risk as two individual POSTs.");
+                }
+                (false, false) => {
+                    println!("\n✓ RESULT: Both legs killed — batch may be atomic.");
+                    println!("  (or UP had no liquidity at snapshot price — rerun to confirm)");
+                }
+                (true, true) => {
+                    println!("\n✓ RESULT: Both legs filled — valid arb executed via batch.");
+                }
+            }
+        }
+        Err(e) => {
+            println!("batch POST /orders error: {e}");
+            println!("  → batch endpoint may not support FOK orders at all");
+        }
+    }
+}
+
+// =============================================================================
 // Exchange WebSocket tests (Binance, Coinbase, OKX)
 // =============================================================================
 

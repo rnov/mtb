@@ -244,7 +244,7 @@ Key choices made during development, with rationale. Update this when strategy d
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Order type | FOK (fill-or-kill) | No open orders to manage, no partial fills per order |
-| Concurrency | `tokio::join!` on two `POST /order` | Batch `POST /orders` returns empty status for FOK — unusable |
+| Concurrency | `tokio::join!` on two `POST /order` | Batch `POST /orders` is NOT atomic — empirically confirmed: UP filled while DOWN was FOK-killed in the same batch request. Also, `success` field is unreliable for FOK kills in batch (returns `true` with `making=0`). No benefit over two individual POSTs. |
 | Share count | Integer only (`floor()`) | CLOB rejects if `price × shares` has >2 decimal places |
 | VWAP check (Step 8d) | **Intentionally skipped** | With strict best-ask FOK, VWAP = best_ask always. 8d only adds value if we walk up the book (multi-level fills). We don't. |
 | Max leg price | 0.50 (recommended) | Caps partial fill exposure at 1.5× the per-leg cost. 0.90 allows lopsided pairs (e.g. $0.06/$0.93) with unacceptable directional risk. |
