@@ -150,6 +150,10 @@ async fn main() -> anyhow::Result<()> {
         n.notify_startup(mode_str, markets.len()).await;
     }
 
+    // Pre-warm SDK fee_rate + tick_size caches for all discovered markets.
+    // Eliminates the 36-48ms cold-path build penalty on the first arb of each window.
+    executor.warm_cache(&markets).await;
+
     // Collect all token IDs for orderbook subscription
     let mut all_token_ids = Vec::new();
     for m in &markets {
@@ -583,6 +587,7 @@ async fn main() -> anyhow::Result<()> {
                 match discovery.discover().await {
                     Ok(new_markets) => {
                         info!(count = new_markets.len(), "market refresh complete");
+                        executor.warm_cache(&new_markets).await;
                         // TODO: update market list, subscribe to new tokens
                     }
                     Err(e) => {

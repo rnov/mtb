@@ -1,4 +1,4 @@
-mode = "live"
+mode = "dry_run"
 clob_url = "https://clob.polymarket.com"
 gamma_url = "https://gamma-api.polymarket.com"
 chain_id = 137
@@ -26,7 +26,7 @@ assets = ["BTC", "ETH", "SOL", "XRP"]
 
 [logging]
 trade_log_path = "logs/trades.jsonl"
-filter = "mtb=info"
+filter = "mtb=debug,info"
 
 [telegram]
 chat_id=0

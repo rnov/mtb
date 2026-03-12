@@ -14,6 +14,7 @@ use polymarket_client_sdk::clob::{Client, Config};
 use polymarket_client_sdk::types::U256;
 
 use crate::error::{Error, Result};
+use crate::market::MarketPair;
 use crate::strategy::Opportunity;
 
 use super::{ExecutionResult, Executor};
@@ -329,6 +330,37 @@ impl LiveExecutor {
 
 #[async_trait]
 impl Executor for LiveExecutor {
+    /// Pre-warm fee_rate + tick_size caches for every token in the market list.
+    ///
+    /// Calls `tick_size()` and `fee_rate_bps()` directly — the two HTTP endpoints that
+    /// `build()` would otherwise hit on first use. Both results are cached by token ID
+    /// in the SDK's internal DashMap, so subsequent `build()` calls in `execute_inner`
+    /// are pure cache hits with zero HTTP.
+    async fn warm_cache(&self, markets: &[MarketPair]) {
+        for m in markets {
+            let up_token = match U256::from_str(&m.up_token_id) {
+                Ok(t) => t,
+                Err(e) => { warn!(asset = %m.asset, error = %e, "warm_cache: invalid up token ID"); continue; }
+            };
+            let down_token = match U256::from_str(&m.down_token_id) {
+                Ok(t) => t,
+                Err(e) => { warn!(asset = %m.asset, error = %e, "warm_cache: invalid down token ID"); continue; }
+            };
+
+            // Fetch tick_size + fee_rate_bps for both legs concurrently.
+            // These are the exact two HTTP calls build() makes per token — pulling them
+            // here means the hot execution path never touches CLOB for this data.
+            tokio::join!(
+                async { let _ = self.client.tick_size(up_token).await; },
+                async { let _ = self.client.fee_rate_bps(up_token).await; },
+                async { let _ = self.client.tick_size(down_token).await; },
+                async { let _ = self.client.fee_rate_bps(down_token).await; },
+            );
+
+            info!(asset = %m.asset, market_id = %m.market_id, "SDK cache warmed");
+        }
+    }
+
     async fn execute(&self, opportunity: &Opportunity) -> Result<ExecutionResult> {
         info!(
             market_id = %opportunity.market_id,
