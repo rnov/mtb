@@ -846,6 +846,152 @@ async fn live_probe_min_order_size() {
 }
 
 // =============================================================================
+// Post latency breakdown test
+// =============================================================================
+
+/// Measure CLOB post latency across three scenarios, no real fills.
+///
+/// Scenario A — Gateway rejection (sub-$1 notional):
+///   1 share @ $0.01 = $0.01 notional → 400 before matching engine
+///   Measures: network + TLS + gateway validation only
+///
+/// Scenario B — Matching engine FOK kill (single leg):
+///   100 shares @ $0.01 = $1.00 notional → reaches matching engine, FOK killed
+///   Measures: network + TLS + gateway + matching engine
+///
+/// Scenario C — Two concurrent FOK kills (tokio::join!):
+///   Simulates real arb execution path with unfillable prices on both legs
+///   Measures: what our actual bot experiences end-to-end (minus build/sign)
+///
+/// B - A = matching engine processing time (the irreducible component)
+///
+/// cargo test live_post_latency_breakdown -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn live_post_latency_breakdown() {
+    use std::time::Instant;
+
+    let private_key = load_private_key();
+    let signer = LocalSigner::from_str(&private_key)
+        .expect("valid private key")
+        .with_chain_id(Some(POLYGON_CHAIN_ID));
+
+    let client = ClobClient::new(CLOB_URL, Config::default())
+        .expect("create CLOB client")
+        .authentication_builder(&signer)
+        .signature_type(SignatureType::GnosisSafe)
+        .authenticate()
+        .await
+        .expect("authentication should succeed");
+
+    // Discover a real market for token IDs
+    let discovery_config = DiscoveryConfig {
+        poll_interval_secs: 60,
+        assets: vec!["BTC".into()],
+    };
+    let discovery = mtb::market::MarketDiscovery::new(discovery_config).unwrap();
+    let markets = discovery.discover().await.unwrap();
+    assert!(!markets.is_empty(), "no active markets");
+    let market = &markets[0];
+
+    let up_token = U256::from_str(&market.up_token_id).unwrap();
+    let down_token = U256::from_str(&market.down_token_id).unwrap();
+
+    // Pre-warm SDK caches so build() is always 0ms
+    let _ = client.tick_size(up_token).await;
+    let _ = client.fee_rate_bps(up_token).await;
+    let _ = client.tick_size(down_token).await;
+    let _ = client.fee_rate_bps(down_token).await;
+
+    const SAMPLES: usize = 5;
+
+    // ── Scenario A: Gateway rejection (sub-$1 notional) ──────────────────────
+    println!("\n── Scenario A: Gateway rejection (1 share @ $0.01, notional=$0.01) ──");
+    let mut a_times = Vec::new();
+    for i in 0..SAMPLES {
+        let order = client.limit_order()
+            .token_id(up_token)
+            .price(dec!(0.01))
+            .size(dec!(1))          // 1 × $0.01 = $0.01 — below $1 floor
+            .side(Side::Buy)
+            .order_type(OrderType::FOK)
+            .build().await.expect("build");
+        let signed = client.sign(&signer, order).await.expect("sign");
+        let t = Instant::now();
+        let _ = client.post_order(signed).await;
+        let ms = t.elapsed().as_millis();
+        a_times.push(ms);
+        println!("  sample {}: {}ms", i + 1, ms);
+    }
+
+    // ── Scenario B: Matching engine FOK kill (single leg) ────────────────────
+    println!("\n── Scenario B: Matching engine FOK kill (100 shares @ $0.01, notional=$1.00) ──");
+    let mut b_times = Vec::new();
+    for i in 0..SAMPLES {
+        let order = client.limit_order()
+            .token_id(up_token)
+            .price(dec!(0.01))
+            .size(dec!(100))        // 100 × $0.01 = $1.00 — passes floor, no seller at $0.01
+            .side(Side::Buy)
+            .order_type(OrderType::FOK)
+            .build().await.expect("build");
+        let signed = client.sign(&signer, order).await.expect("sign");
+        let t = Instant::now();
+        let _ = client.post_order(signed).await;
+        let ms = t.elapsed().as_millis();
+        b_times.push(ms);
+        println!("  sample {}: {}ms", i + 1, ms);
+    }
+
+    // ── Scenario C: Two concurrent FOK kills (tokio::join!) ──────────────────
+    println!("\n── Scenario C: Concurrent FOK kills on both legs (tokio::join!) ──");
+    let mut c_times = Vec::new();
+    for i in 0..SAMPLES {
+        let up_order = client.limit_order()
+            .token_id(up_token)
+            .price(dec!(0.01))
+            .size(dec!(100))
+            .side(Side::Buy)
+            .order_type(OrderType::FOK)
+            .build().await.expect("build up");
+        let down_order = client.limit_order()
+            .token_id(down_token)
+            .price(dec!(0.01))
+            .size(dec!(100))
+            .side(Side::Buy)
+            .order_type(OrderType::FOK)
+            .build().await.expect("build down");
+        let signed_up = client.sign(&signer, up_order).await.expect("sign up");
+        let signed_down = client.sign(&signer, down_order).await.expect("sign down");
+
+        let t = Instant::now();
+        let (up_res, down_res) = tokio::join!(
+            client.post_order(signed_up),
+            client.post_order(signed_down),
+        );
+        let ms = t.elapsed().as_millis();
+        c_times.push(ms);
+
+        let up_label = if up_res.is_ok() { "ok" } else { "err" };
+        let down_label = if down_res.is_ok() { "ok" } else { "err" };
+        println!("  sample {}: {}ms  (up={} down={})", i + 1, ms, up_label, down_label);
+    }
+
+    // ── Summary ───────────────────────────────────────────────────────────────
+    let median = |mut v: Vec<u128>| -> u128 { v.sort(); v[v.len() / 2] };
+    let a_p50 = median(a_times.clone());
+    let b_p50 = median(b_times.clone());
+    let c_p50 = median(c_times.clone());
+
+    println!("\n── Summary (p50 across {} samples) ──", SAMPLES);
+    println!("  A  gateway rejection (pre-engine) : {}ms", a_p50);
+    println!("  B  matching engine FOK kill        : {}ms", b_p50);
+    println!("  C  concurrent both legs            : {}ms", c_p50);
+    println!("  B - A (matching engine overhead)   : {}ms", b_p50.saturating_sub(a_p50));
+    println!("  C - B (concurrent vs single)       : {}ms", c_p50.saturating_sub(b_p50));
+}
+
+// =============================================================================
 // Batch order atomicity test
 // =============================================================================
 
