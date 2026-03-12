@@ -347,14 +347,19 @@ impl Executor for LiveExecutor {
                 Err(e) => { warn!(asset = %m.asset, error = %e, "warm_cache: invalid down token ID"); continue; }
             };
 
-            // Fetch tick_size + fee_rate_bps for both legs concurrently.
-            // These are the exact two HTTP calls build() makes per token — pulling them
-            // here means the hot execution path never touches CLOB for this data.
+            // Fetch tick_size, fee_rate_bps, and neg_risk for both legs concurrently.
+            // These are the exact three HTTP calls build() + sign() make per token:
+            //   build() → tick_size + fee_rate_bps
+            //   sign()  → neg_risk (determines which exchange contract to sign against)
+            // Pulling all three here means the hot execution path is pure cache hits
+            // with zero HTTP — build_ms=0 and sign_ms=0 on every arb.
             tokio::join!(
                 async { let _ = self.client.tick_size(up_token).await; },
                 async { let _ = self.client.fee_rate_bps(up_token).await; },
+                async { let _ = self.client.neg_risk(up_token).await; },
                 async { let _ = self.client.tick_size(down_token).await; },
                 async { let _ = self.client.fee_rate_bps(down_token).await; },
+                async { let _ = self.client.neg_risk(down_token).await; },
             );
 
             info!(asset = %m.asset, market_id = %m.market_id, "SDK cache warmed");
