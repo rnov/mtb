@@ -308,7 +308,7 @@ p50 varies run-to-run depending on how active the 15-min market is at that momen
 
 Live run on Vultr Amsterdam immediately returned:
 ```
-geo-blocked: trading not available from NL (x.x.x.x)
+geo-blocked: trading not available from NL
 ```
 
 Netherlands blocks **authenticated trading** even though it is not listed in the official

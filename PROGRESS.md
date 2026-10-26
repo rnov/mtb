@@ -230,7 +230,7 @@ larger edge / smaller size.
 - **Amsterdam geo-block finding:** Netherlands is blocked for **authenticated trading** despite
   not appearing on the official Polymarket geoblock docs. Public endpoints (orderbook reads,
   latency bench) work fine from NL. Live mode immediately returns:
-  `geo-blocked: trading not available from NL (x.x.x.x)`.
+  `geo-blocked: trading not available from NL`.
   This rules out: Vultr Amsterdam, TradingVPS Amsterdam, DigitalOcean Amsterdam, any NL VPS.
 
 - **Recommended path (updated):**

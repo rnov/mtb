@@ -80,11 +80,14 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("live mode requires POLYMARKET_PRIVATE_KEY in .env");
             }
             info!("running in LIVE mode — real orders will be placed!");
-            Box::new(LiveExecutor::new(
-                app_config.clob_url.clone(),
-                app_config.chain_id,
-                secrets.private_key.clone(),
-            ).await?)
+            Box::new(
+                LiveExecutor::new(
+                    app_config.clob_url.clone(),
+                    app_config.chain_id,
+                    secrets.private_key.clone(),
+                )
+                .await?,
+            )
         }
     };
 
@@ -94,12 +97,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize Telegram notifier (optional — needs bot token + chat_id)
     #[cfg(feature = "telegram")]
     let notifier: Option<monitor::Notifier> =
-        match (&secrets.telegram_bot_token, &app_config.telegram) {
-            (Some(token), Some(tg_config)) => {
-                Some(monitor::Notifier::new(token, tg_config.chat_id))
-            }
+        match (&secrets.telegram_bot_token, secrets.telegram_chat_id) {
+            (Some(token), Some(chat_id)) => Some(monitor::Notifier::new(token, chat_id)),
             _ => {
-                info!("telegram notifications disabled (missing token or config)");
+                info!("telegram notifications disabled (missing token or chat_id)");
                 None
             }
         };

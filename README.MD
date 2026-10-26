@@ -32,6 +32,7 @@ cargo build
 cat > .env << 'EOF'
 POLYMARKET_PRIVATE_KEY=your_64_char_hex_key_no_0x_prefix
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_CHAT_ID=your_telegram_chat_id
 EOF
 ```
 
@@ -66,7 +67,6 @@ To switch to live trading, change `mode = "live"` in `config.toml`. Requires fun
 | `[strategy]` | `min_arb_profit`, `assets`, `max_order_size_usdc`, `max_leg_price`, `min_order_usdc`, `min_fresh_sources`, `max_price_age_ms`, `max_divergence_pct` |
 | `[risk]` | `max_exposure_usdc`, `max_daily_loss_usdc`, `max_consecutive_failures`, `feed_disconnect_timeout_secs` |
 | `[discovery]` | `poll_interval_secs`, `assets` |
-| `[telegram]` | `chat_id` |
 
 **`.env`** -- secrets (never committed):
 
@@ -74,6 +74,7 @@ To switch to live trading, change `mode = "live"` in `config.toml`. Requires fun
 |----------|----------|-------------|
 | `POLYMARKET_PRIVATE_KEY` | Live mode | MetaMask private key (64 hex chars, no `0x` prefix) |
 | `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token from BotFather |
+| `TELEGRAM_CHAT_ID` | Optional | Your Telegram chat ID (alerts destination + authorized command sender) |
 
 ## Telegram Bot
 

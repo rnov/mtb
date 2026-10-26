@@ -21,9 +21,13 @@ pub fn load_secrets() -> Secrets {
 
     let private_key = std::env::var("POLYMARKET_PRIVATE_KEY").unwrap_or_default();
     let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN").ok();
+    let telegram_chat_id = std::env::var("TELEGRAM_CHAT_ID")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok());
 
     Secrets {
         private_key,
         telegram_bot_token,
+        telegram_chat_id,
     }
 }
